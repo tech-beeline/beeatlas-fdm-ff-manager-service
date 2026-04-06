@@ -1,0 +1,41 @@
+# Сборка и запуск: docker compose up --build
+# API: http://localhost:8000  ·  Swagger: http://localhost:8000/docs
+# Для webhook и скриптов снаружи задайте FF_API_BASE_URL на публичный URL сервиса.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ffuser
+      POSTGRES_PASSWORD: ffpassword
+      POSTGRES_DB: ffmanager
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ffuser -d ffmanager"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      FF_DB_HOST: db
+      FF_DB_PORT: 5432
+      FF_DB_USER: ffuser
+      FF_DB_PASSWORD: ffpassword
+      FF_DB_NAME: ffmanager
+      FF_SCRIPTS_DIR: scripts
+      # URL для колбэков (внешние проверки, скрипты с хоста): с хоста обычно http://localhost:8000
+      FF_API_BASE_URL: http://localhost:8000
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Подмена скриптов без пересборки образа
+      - ./scripts:/app/scripts
+
+volumes:
+  postgres_data:
