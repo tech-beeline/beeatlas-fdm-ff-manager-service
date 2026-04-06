@@ -16,8 +16,8 @@ FROM ${RUN_IMAGE}
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates python3 pip python3-dev libpq5 && \
     rm -rf /var/cache/apt/archives /var/lib/apt/lists/* && \
-    && groupadd --gid 1000 app \
-    && useradd --uid 1000 --gid app --no-create-home --shell /usr/sbin/nologin app
+    groupadd --gid 1000 app && \
+    useradd --uid 1000 --gid app --no-create-home --shell /usr/sbin/nologin app
 
 COPY --chmod=644 certs/* /usr/local/share/ca-certificates/
 RUN update-ca-certificates
