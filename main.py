@@ -28,7 +28,7 @@ from db import (
     save_product_ff_result,
 )
 from ff_runner import run_ff_check
-from script_runner import list_scripts, get_scripts_dir
+from script_runner import ensure_scripts_dir, list_scripts, get_scripts_dir
 
 app = FastAPI(title="FF Manager", description="Менеджер проверок архитектуры")
 
@@ -175,6 +175,7 @@ class ProductActualResultsBody(BaseModel):
 
 @app.on_event("startup")
 def startup():
+    ensure_scripts_dir()
     init_schema()
 
 

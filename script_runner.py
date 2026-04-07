@@ -1,5 +1,6 @@
 """Обнаружение и запуск скриптов проверок. Поддержка добавления/удаления скриптов без перезапуска."""
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,22 @@ def get_scripts_dir() -> Path:
     """Каталог со скриптами проверок (относительно корня проекта)."""
     root = Path(__file__).resolve().parent
     return root / settings.scripts_dir
+
+
+BUNDLED_SCRIPTS_SRC = Path("/scripts-src")
+
+
+def ensure_scripts_dir() -> None:
+    """
+    Создаёт каталог скриптов при отсутствии и копирует в него файлы из /scripts-src
+    (в образе Docker скрипты дублируются туда из исходного каталога — см. Dockerfile).
+    Если /scripts-src нет (локальный запуск), только гарантирует наличие каталога.
+    """
+    dest = get_scripts_dir()
+    if BUNDLED_SCRIPTS_SRC.is_dir():
+        shutil.copytree(BUNDLED_SCRIPTS_SRC, dest, dirs_exist_ok=True)
+    else:
+        dest.mkdir(parents=True, exist_ok=True)
 
 
 def list_scripts() -> list[str]:

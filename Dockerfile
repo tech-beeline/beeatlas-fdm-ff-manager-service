@@ -1,13 +1,3 @@
-# FF Manager — образ для Kubernetes
-# - процесс не от root (uid/gid 1000)
-# - порт через переменную PORT (по умолчанию 8000); в probes используйте GET /health
-# - корректное завершение: uvicorn как PID 1 получает SIGTERM от kubelet
-#
-# Пример probes:
-#   livenessProbe:  httpGet: path: /health  port: http
-#   readinessProbe: httpGet: path: /health  port: http
-#
-# БД и секреты — через env (FF_DB_*, FF_API_BASE_URL и т.д.) из Secret/ConfigMap.
 
 ARG RUN_IMAGE=ubuntu:22.04
 FROM ${RUN_IMAGE}
@@ -47,3 +37,4 @@ USER 1000:1000
 EXPOSE 8080
 
 CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port \"${PORT}\""]
+
