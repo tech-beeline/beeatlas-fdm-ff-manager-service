@@ -13,7 +13,13 @@ from db import get_latest_check_result
 def get_scripts_dir() -> Path:
     """Каталог со скриптами проверок (относительно корня проекта)."""
     root = Path(__file__).resolve().parent
-    return root / settings.scripts_dir
+    sub = (settings.scripts_dir or "scripts").strip()
+    if not sub or sub == "/":
+        sub = "scripts"
+    # Если в env задать абсолютный путь (например FF_SCRIPTS_DIR=/scripts), то
+    # root / "/scripts" в pathlib превращается в /scripts — корень ФС, часто без прав записи.
+    rel = sub.lstrip("/")
+    return (root / rel) if rel else root / "scripts"
 
 
 BUNDLED_SCRIPTS_SRC = Path("/scripts-src")
