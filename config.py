@@ -1,0 +1,29 @@
+"""Конфигурация сервиса и подключения к БД."""
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    db_host: str = "localhost"
+    db_port: int = 5432
+    db_user: str = "myuser"
+    db_password: str = "mysecretpassword"
+    db_name: str = "mydatabase"
+    scripts_dir: str = "scripts"
+    # Базовый URL API для скриптов проверок (POST /api/v1/product/{alias}/ff)
+    api_base_url: str = "http://127.0.0.1:8000"
+    # Таймаут HTTP POST при вызове внешней проверки (fitness_function.method)
+    external_ff_timeout_seconds: float = 30.0
+
+    @property
+    def database_url(self) -> str:
+        return (
+            f"postgresql://{self.db_user}:{self.db_password}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
+        )
+
+    class Config:
+        env_prefix = "FF_"
+        env_file = ".env"
+
+
+settings = Settings()
