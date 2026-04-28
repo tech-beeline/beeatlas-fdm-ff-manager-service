@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Optional, Union
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exception_handlers import (
     http_exception_handler as default_http_exception_handler,
     request_validation_exception_handler as default_request_validation_exception_handler,
@@ -87,8 +88,8 @@ def _request_validation_error_message_ru(exc: RequestValidationError) -> str:
     return " ".join(fragments)
 
 
-@app.exception_handler(HTTPException)
-async def _http_exception_handler(request: Request, exc: HTTPException):
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code < 400 or exc.status_code >= 500:
         return await default_http_exception_handler(request, exc)
     if exc.status_code != 405 and request.url.path in _PATHS_WITHOUT_CUSTOM_4XX:
