@@ -20,7 +20,7 @@ FDM_BASE_URL = "https://fdm-products-dev-eafdmmart.apps.yd-m6-kt22.vimpelcom.ru"
 
 # Добавляем родительский каталог в path для импорта _common
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import run_check
+from _common import run_check_from_details
 
 
 def _fetch_containers(cmdb_code: str):
@@ -50,21 +50,10 @@ def _fetch_containers(cmdb_code: str):
     return data
 
 
-if __name__ == "__main__":
-    app_code = sys.argv[1] if len(sys.argv) > 1 else ""
+def execute(app_code: str) -> None:
     containers = _fetch_containers(app_code)
-    if not containers:
-        run_check(
-            app_code,
-            SCRIPT_CODE,
-            is_check=False,
-            success_detail=0,
-            count_detail=0,
-            json_details=None,
-        )
-    else:
-        count = len(containers)
-        details = []
+    details = []
+    if containers:
         for c in containers:
             if not isinstance(c, dict):
                 continue
@@ -75,12 +64,4 @@ if __name__ == "__main__":
                     "containerCode": c.get("code"),
                 }
             )
-        json_details = json.dumps(details, ensure_ascii=False)
-        run_check(
-            app_code,
-            SCRIPT_CODE,
-            is_check=True,
-            success_detail=count,
-            count_detail=count,
-            json_details=json_details,
-        )
+    run_check_from_details(app_code, SCRIPT_CODE, details)

@@ -108,8 +108,7 @@ def compute_operation_stats(cmdb_code: str):
     return is_check, success_detail, count_detail, json_details
 
 
-if __name__ == "__main__":
-    app_code = sys.argv[1] if len(sys.argv) > 1 else ""
+def execute(app_code: str) -> None:
     is_check, success_detail, count_detail, json_details = compute_operation_stats(app_code)
     run_check(
         app_code,

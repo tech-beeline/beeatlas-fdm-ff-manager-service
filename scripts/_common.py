@@ -11,7 +11,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 
 def run_check(
@@ -66,3 +66,36 @@ def run_check(
     except OSError as e:
         print(f"Ошибка сети при обращении к API: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def run_check_from_details(
+    app_code: str,
+    script_code: str,
+    details: list[dict[str, Any]],
+) -> None:
+    """
+    Упрощённый helper для типового кейса:
+    - есть список детальных записей;
+    - проверка успешна, если список непустой;
+    - success_detail и count_detail равны числу записей.
+    """
+    count = len(details)
+    if count == 0:
+        run_check(
+            app_code,
+            script_code,
+            is_check=False,
+            success_detail=0,
+            count_detail=0,
+            json_details=None,
+        )
+        return
+
+    run_check(
+        app_code,
+        script_code,
+        is_check=True,
+        success_detail=count,
+        count_detail=count,
+        json_details=json.dumps(details, ensure_ascii=False),
+    )

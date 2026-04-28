@@ -1,9 +1,12 @@
 """Обнаружение и запуск скриптов проверок. Поддержка добавления/удаления скриптов без перезапуска."""
 import errno
+import importlib.util
+import io
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -191,6 +194,13 @@ def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]
     env["FF_API_BASE_URL"] = settings.api_base_url
 
     try:
+        ok, out, done = _run_script_module(path, code, app_mnemonic, env)
+        if done:
+            if not ok:
+                return False, out, None
+            check_result = get_latest_check_result(app_mnemonic, code)
+            return True, out or "OK", check_result
+
         result = subprocess.run(
             [sys.executable, str(path), app_mnemonic],
             capture_output=True,
@@ -209,4 +219,39 @@ def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]
     except Exception as e:
         return False, str(e), None
 
+
+def _run_script_module(
+    path: Path, code: str, app_mnemonic: str, env: dict
+) -> Tuple[bool, str, bool]:
+    """
+    Пытается выполнить скрипт как модуль через функцию execute(app_code).
+    Возвращает:
+      - ok: успешность выполнения execute
+      - output: stdout/stderr функции
+      - done: True, если запуск через execute был выполнен;
+              False, если execute отсутствует и нужен fallback на subprocess.
+    """
+    spec = importlib.util.spec_from_file_location(f"ff_script_{code}", str(path))
+    if spec is None or spec.loader is None:
+        return False, "Не удалось подготовить импорт скрипта.", True
+
+    module = importlib.util.module_from_spec(spec)
+    old_env = dict(os.environ)
+    capture = io.StringIO()
+    try:
+        os.environ.update(env)
+        spec.loader.exec_module(module)
+        execute = getattr(module, "execute", None)
+        if not callable(execute):
+            return True, "", False
+        with redirect_stdout(capture), redirect_stderr(capture):
+            execute(app_mnemonic)
+        return True, capture.getvalue().strip(), True
+    except Exception as e:
+        output = capture.getvalue().strip()
+        msg = f"{output}\n{e}".strip() if output else str(e)
+        return False, msg, True
+    finally:
+        os.environ.clear()
+        os.environ.update(old_env)
 
