@@ -28,7 +28,12 @@ from db import (
     save_product_ff_result,
 )
 from ff_runner import run_ff_check
-from script_runner import ensure_scripts_dir, list_scripts, get_scripts_dir
+from script_runner import (
+    ensure_scripts_dir,
+    list_scripts,
+    get_scripts_dir,
+    materialize_missing_scripts_from_db,
+)
 
 app = FastAPI(title="FF Manager", description="Менеджер проверок архитектуры")
 
@@ -86,7 +91,7 @@ def _request_validation_error_message_ru(exc: RequestValidationError) -> str:
 async def _http_exception_handler(request: Request, exc: HTTPException):
     if exc.status_code < 400 or exc.status_code >= 500:
         return await default_http_exception_handler(request, exc)
-    if request.url.path in _PATHS_WITHOUT_CUSTOM_4XX:
+    if exc.status_code != 405 and request.url.path in _PATHS_WITHOUT_CUSTOM_4XX:
         return await default_http_exception_handler(request, exc)
     msg = _http_exception_detail_to_ru(exc.detail)
     headers = getattr(exc, "headers", None)
@@ -177,6 +182,7 @@ class ProductActualResultsBody(BaseModel):
 def startup():
     ensure_scripts_dir()
     init_schema()
+    materialize_missing_scripts_from_db()
 
 
 @app.get("/api/v1/")
@@ -350,7 +356,6 @@ async def _perform_fitness_function_upsert(
         "test": is_test,
         "script_stored": set_script,
         "script_attached": attached,
-        "method_updated": set_method,
         "method": method_stored,
     }
 

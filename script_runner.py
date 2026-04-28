@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from config import settings
-from db import get_latest_check_result
+from db import get_all_fitness_functions, get_latest_check_result
 
 # Если целевой каталог (например смонтированный volume) только для чтения — сканируем /scripts-src из образа.
 _scripts_dir_override: Optional[Path] = None
@@ -116,6 +116,33 @@ def ensure_scripts_dir() -> None:
                     use_bundled()
                     return
         raise
+
+
+def materialize_missing_scripts_from_db() -> None:
+    """
+    Для строк fitness_function с непустым script в БД создаёт файл {code}.py в каталоге скриптов,
+    если такого файла ещё нет. Не перезаписывает существующие файлы.
+    """
+    scripts_dir = get_scripts_dir()
+    try:
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    rows = get_all_fitness_functions()
+    for row in rows:
+        code = (row.get("code") or "").strip()
+        script = row.get("script")
+        if not code:
+            continue
+        if script is None or not str(script).strip():
+            continue
+        path = scripts_dir / f"{code}.py"
+        if path.exists():
+            continue
+        try:
+            path.write_text(str(script), encoding="utf-8")
+        except OSError:
+            continue
 
 
 def list_scripts() -> list[str]:
