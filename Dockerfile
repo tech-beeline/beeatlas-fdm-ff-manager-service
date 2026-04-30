@@ -29,7 +29,6 @@ COPY scripts /scripts-src
 # Пакет scripts нужен для import scripts._common (script_runner); /scripts-src — копия для ensure_scripts_dir при RO volume.
 COPY --chown=1000:1000 scripts ./scripts
 COPY --chown=1000:1000 *.py .
-COPY --chown=1000:1000 TECH_VERSION ./TECH_VERSION
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \

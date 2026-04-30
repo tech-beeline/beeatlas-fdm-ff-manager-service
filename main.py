@@ -6,7 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from typing import Annotated, Any, Optional, Union
+from typing import Any, Optional, Union
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -462,14 +462,7 @@ async def create_fitness_function(
     applicability: Optional[str] = Form(None),
     auxiliary_check: Optional[str] = Form(None),
     test: Optional[str] = Form(None),
-    script: Annotated[
-        Optional[str],
-        Form(
-            None,
-            description="Текст Python-скрипта (многострочный). Для больших скриптов предпочтительнее script_file.",
-            json_schema_extra={"format": "textarea"},
-        ),
-    ] = None,
+    script: Optional[str] = Form(None),
     script_file: UploadFile = File(None),
     method: Optional[str] = Form(
         None,
