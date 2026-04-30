@@ -13,7 +13,7 @@ from urllib.error import URLError, HTTPError
 
 SCRIPT_CODE = os.path.splitext(os.path.basename(__file__))[0]
 
-FDM_BASE_URL = "https://fdm-products-dev-eafdmmart.apps.yd-m6-kt22.vimpelcom.ru"
+FDM_BASE_URL = "https://eafdmmart-develop-fdm-products.apps.yd-m6-kt22.vimpelcom.ru"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _common import ExecuteResult, detail_row_passes
