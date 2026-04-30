@@ -93,7 +93,7 @@ def save_product_ff_result(
             f"""
             UPDATE {SCHEMA}.product_ff
             SET is_actual = false
-            WHERE product_code = %s AND ff_id = %s AND is_actual = true
+            WHERE LOWER(product_code) = LOWER(%s) AND ff_id = %s AND is_actual = true
             """,
             (code_key, ff_id),
         )
