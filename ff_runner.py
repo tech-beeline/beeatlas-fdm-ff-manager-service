@@ -3,7 +3,7 @@ import json
 import urllib.error
 import urllib.request
 import uuid
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from config import settings
 from db import (
@@ -37,6 +37,7 @@ def run_ff_check(
     app_mnemonic: str,
     *,
     structurizr_credentials: Optional[Tuple[str, str]] = None,
+    data: Optional[dict[str, Any]] = None,
 ) -> Tuple[bool, str, Optional[bool]]:
     """
     Если в БД у фитнес-функции задан непустой method (URL) — POST { callId, productCode }, запись в outside_ff.
@@ -49,7 +50,12 @@ def run_ff_check(
         if method:
             return _invoke_external_post(method, row["id"], app_mnemonic)
 
-    return run_script(code, app_mnemonic, structurizr_credentials=structurizr_credentials)
+    return run_script(
+        code,
+        app_mnemonic,
+        structurizr_credentials=structurizr_credentials,
+        data=data,
+    )
 
 
 def _invoke_external_post(url: str, ff_id: int, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]:

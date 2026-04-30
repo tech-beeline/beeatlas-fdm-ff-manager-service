@@ -1,6 +1,9 @@
 """Сервис — менеджер проверок (fitness functions). API: uvicorn main:app — см. GET /docs."""
 import json
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import Any, Optional, Union
 
@@ -29,6 +32,7 @@ from db import (
     save_product_ff_result,
 )
 from ff_runner import run_ff_check
+from config import settings
 from structurizr_hmac import CredentialsFetchError, fetch_structurizr_credentials
 from script_runner import (
     ensure_scripts_dir,
@@ -220,6 +224,34 @@ def api_get_fitness_functions():
 
 class RunRequest(BaseModel):
     app: str
+
+
+def _fetch_document_data(document_id: str) -> dict[str, Any]:
+    base = (settings.documents_api_base_url or "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(
+            status_code=500,
+            detail="Не задан FF_DOCUMENTS_API_BASE_URL для загрузки docId",
+        )
+
+    safe_id = urllib.parse.quote(str(document_id).strip(), safe="")
+    url = f"{base}/api/v1/documents/{safe_id}"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=30.0) as resp:
+            raw = resp.read()
+            payload = json.loads(raw)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
+        raise HTTPException(status_code=e.code, detail=detail) from e
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"Ошибка запроса к Documents API: {e}") from e
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Некорректный JSON от Documents API: {e}") from e
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Documents API вернул не JSON-объект")
+    return payload
 
 
 class ProductFfResultBody(BaseModel):
@@ -476,7 +508,7 @@ def _runnable_ff_codes_ordered() -> list[str]:
     "/api/v1/run/{code}",
     responses=_openapi_client_errors(400, 405, 422),
 )
-def run_one(code: str, body: RunRequest):
+def run_one(code: str, body: RunRequest, docId: Optional[str] = None):
     """
     Запуск проверки для продукта: скрипт .py или POST на URL из fitness_function.method.
     В теле запроса передаётся мнемоника приложения (поле app).
@@ -503,8 +535,18 @@ def run_one(code: str, body: RunRequest):
     except CredentialsFetchError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    data: dict[str, Any] = {}
+    if docId is not None:
+        raw_doc_id = str(docId).strip()
+        if not raw_doc_id:
+            raise HTTPException(status_code=400, detail="Параметр docId не может быть пустым")
+        data = _fetch_document_data(raw_doc_id)
+
     success, message, check_result = run_ff_check(
-        code, body.app, structurizr_credentials=sz_creds
+        code,
+        body.app,
+        structurizr_credentials=sz_creds,
+        data=data,
     )
     if not success:
         raise HTTPException(status_code=400, detail=message)
@@ -521,7 +563,7 @@ def run_one(code: str, body: RunRequest):
     "/api/v1/run-all",
     responses=_openapi_client_errors(400, 405, 422),
 )
-def run_all(body: RunRequest):
+def run_all(body: RunRequest, docId: Optional[str] = None):
     """
     Запуск проверок для приложения: скрипты .py и внешние POST (fitness_function.method).
     Проверки с fitness_function.test = true не запускаются.
@@ -550,6 +592,13 @@ def run_all(body: RunRequest):
     except CredentialsFetchError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    data: dict[str, Any] = {}
+    if docId is not None:
+        raw_doc_id = str(docId).strip()
+        if not raw_doc_id:
+            raise HTTPException(status_code=400, detail="Параметр docId не может быть пустым")
+        data = _fetch_document_data(raw_doc_id)
+
     results: dict = {}
     ran: set[str] = set()
 
@@ -557,7 +606,10 @@ def run_all(body: RunRequest):
     batch_null = [c for c in all_codes if _applicability_empty(ff_app_map.get(c))]
     for code in batch_null:
         ok, msg, check_result = run_ff_check(
-            code, body.app, structurizr_credentials=sz_creds
+            code,
+            body.app,
+            structurizr_credentials=sz_creds,
+            data=data,
         )
         results[code] = {"success": ok, "message": msg, "check_result": check_result}
         ran.add(code)
@@ -575,7 +627,10 @@ def run_all(body: RunRequest):
             break
         for code in batch:
             ok, msg, check_result = run_ff_check(
-                code, body.app, structurizr_credentials=sz_creds
+                code,
+                body.app,
+                structurizr_credentials=sz_creds,
+                data=data,
             )
             results[code] = {"success": ok, "message": msg, "check_result": check_result}
             ran.add(code)

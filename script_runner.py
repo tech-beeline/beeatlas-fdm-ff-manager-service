@@ -1,6 +1,7 @@
 """Обнаружение и запуск скриптов проверок. Поддержка добавления/удаления скриптов без перезапуска."""
 import errno
 import importlib.util
+import inspect
 import io
 import os
 import shutil
@@ -8,7 +9,7 @@ import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from config import settings
 from db import get_all_fitness_functions, get_latest_check_result
@@ -197,6 +198,7 @@ def run_script(
     code: str,
     app_mnemonic: str,
     structurizr_credentials: Optional[Tuple[str, str]] = None,
+    data: Optional[dict[str, Any]] = None,
 ) -> Tuple[bool, str, Optional[bool]]:
     """
     Запуск одного скрипта проверки для приложения.
@@ -222,7 +224,9 @@ def run_script(
         env["FF_STRUCTURIZR_HTTP_TIMEOUT"] = str(settings.structurizr_http_timeout_seconds)
 
     try:
-        ok, out, done, check_from_execute = _run_script_module(path, code, app_mnemonic, env)
+        ok, out, done, check_from_execute = _run_script_module(
+            path, code, app_mnemonic, env, data
+        )
         if done:
             if not ok:
                 return False, out, None
@@ -248,7 +252,11 @@ def run_script(
 
 
 def _run_script_module(
-    path: Path, code: str, app_mnemonic: str, env: dict
+    path: Path,
+    code: str,
+    app_mnemonic: str,
+    env: dict,
+    data: Optional[dict[str, Any]] = None,
 ) -> Tuple[bool, str, bool, Optional[bool]]:
     """
     Пытается выполнить скрипт как модуль через функцию execute(app_code).
@@ -269,6 +277,8 @@ def _run_script_module(
     try:
         os.environ.update(env)
         spec.loader.exec_module(module)
+        # Доступ к документу как к глобальной переменной в скрипте.
+        setattr(module, "data", data if data is not None else {})
         execute = getattr(module, "execute", None)
         if not callable(execute):
             return True, "", False, None
@@ -276,7 +286,13 @@ def _run_script_module(
         from scripts._common import coerce_execute_result, persist_execute_result
 
         with redirect_stdout(capture), redirect_stderr(capture):
-            raw = execute(app_mnemonic)
+            sig = inspect.signature(execute)
+            if "data" in sig.parameters:
+                raw = execute(app_mnemonic, data=data if data is not None else {})
+            elif len(sig.parameters) >= 2:
+                raw = execute(app_mnemonic, data if data is not None else {})
+            else:
+                raw = execute(app_mnemonic)
         result = coerce_execute_result(raw, app_mnemonic, code)
         persist_execute_result(
             product_code=app_mnemonic.strip(),
