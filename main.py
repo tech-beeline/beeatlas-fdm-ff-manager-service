@@ -1,4 +1,5 @@
 """Сервис — менеджер проверок (fitness functions). API: uvicorn main:app — см. GET /docs."""
+import ast
 import json
 import os
 import urllib.error
@@ -323,12 +324,22 @@ def _normalize_script_text_input(raw_script: str) -> str:
 def _validate_python_script_text(script_text: str, *, field_name: str) -> None:
     """Базовая проверка синтаксиса Python-кода перед сохранением скрипта."""
     try:
-        compile(script_text, f"<{field_name}>", "exec")
+        tree = ast.parse(script_text, filename=f"<{field_name}>", mode="exec")
     except SyntaxError as e:
         raise HTTPException(
             status_code=422,
             detail=f"Скрипт в поле '{field_name}' содержит синтаксическую ошибку: {e.msg}",
         ) from e
+
+    has_execute = any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "execute"
+        for node in tree.body
+    )
+    if not has_execute:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Скрипт в поле '{field_name}' должен содержать функцию execute(...)",
+        )
 
 
 def _form_bool_optional(value: Optional[str]) -> bool:
