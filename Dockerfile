@@ -26,6 +26,8 @@ LABEL org.opencontainers.image.title="FF Manager" \
 WORKDIR /app
 COPY requirements.txt .
 COPY scripts /scripts-src
+# Пакет scripts нужен для import scripts._common (script_runner); /scripts-src — копия для ensure_scripts_dir при RO volume.
+COPY --chown=1000:1000 scripts ./scripts
 COPY --chown=1000:1000 *.py .
 
 RUN pip install --no-cache-dir --upgrade pip \

@@ -12,7 +12,6 @@ from typing import Optional, Tuple
 
 from config import settings
 from db import get_all_fitness_functions, get_latest_check_result
-from scripts._common import coerce_execute_result, persist_execute_result
 
 # Если целевой каталог (например смонтированный volume) только для чтения — сканируем /scripts-src из образа.
 _scripts_dir_override: Optional[Path] = None
@@ -245,6 +244,9 @@ def _run_script_module(
         execute = getattr(module, "execute", None)
         if not callable(execute):
             return True, "", False, None
+        # Импорт после startup: ensure_scripts_dir() копирует /scripts-src → каталог скриптов (часто /app/scripts).
+        from scripts._common import coerce_execute_result, persist_execute_result
+
         with redirect_stdout(capture), redirect_stderr(capture):
             raw = execute(app_mnemonic)
         result = coerce_execute_result(raw, app_mnemonic, code)
