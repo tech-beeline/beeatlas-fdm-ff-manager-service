@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 
 from config import settings
 from db import get_all_fitness_functions, get_latest_check_result
+from scripts._common import coerce_execute_result, persist_execute_result
 
 # Если целевой каталог (например смонтированный volume) только для чтения — сканируем /scripts-src из образа.
 _scripts_dir_override: Optional[Path] = None
@@ -194,12 +195,11 @@ def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]
     env["FF_API_BASE_URL"] = settings.api_base_url
 
     try:
-        ok, out, done = _run_script_module(path, code, app_mnemonic, env)
+        ok, out, done, check_from_execute = _run_script_module(path, code, app_mnemonic, env)
         if done:
             if not ok:
                 return False, out, None
-            check_result = get_latest_check_result(app_mnemonic, code)
-            return True, out or "OK", check_result
+            return True, out or "OK", check_from_execute
 
         result = subprocess.run(
             [sys.executable, str(path), app_mnemonic],
@@ -222,7 +222,7 @@ def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]
 
 def _run_script_module(
     path: Path, code: str, app_mnemonic: str, env: dict
-) -> Tuple[bool, str, bool]:
+) -> Tuple[bool, str, bool, Optional[bool]]:
     """
     Пытается выполнить скрипт как модуль через функцию execute(app_code).
     Возвращает:
@@ -230,10 +230,11 @@ def _run_script_module(
       - output: stdout/stderr функции
       - done: True, если запуск через execute был выполнен;
               False, если execute отсутствует и нужен fallback на subprocess.
+      - is_check: результат проверки после сохранения через API, либо None если execute не вызывался.
     """
     spec = importlib.util.spec_from_file_location(f"ff_script_{code}", str(path))
     if spec is None or spec.loader is None:
-        return False, "Не удалось подготовить импорт скрипта.", True
+        return False, "Не удалось подготовить импорт скрипта.", True, None
 
     module = importlib.util.module_from_spec(spec)
     old_env = dict(os.environ)
@@ -243,14 +244,21 @@ def _run_script_module(
         spec.loader.exec_module(module)
         execute = getattr(module, "execute", None)
         if not callable(execute):
-            return True, "", False
+            return True, "", False, None
         with redirect_stdout(capture), redirect_stderr(capture):
-            execute(app_mnemonic)
-        return True, capture.getvalue().strip(), True
+            raw = execute(app_mnemonic)
+        result = coerce_execute_result(raw, app_mnemonic, code)
+        persist_execute_result(
+            product_code=app_mnemonic.strip(),
+            ff_code=code.strip(),
+            is_check=result["is_check"],
+            details=result["details"],
+        )
+        return True, capture.getvalue().strip(), True, result["is_check"]
     except Exception as e:
         output = capture.getvalue().strip()
         msg = f"{output}\n{e}".strip() if output else str(e)
-        return False, msg, True
+        return False, msg, True, None
     finally:
         os.environ.clear()
         os.environ.update(old_env)

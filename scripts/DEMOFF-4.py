@@ -5,7 +5,7 @@
 - по коду продукта (cmdb) вызывает внешний сервис FDM;
 - если для продукта есть хотя бы один контейнер, через API пишется is_check = true;
 - если контейнеров нет — is_check = false.
-Дополнительно заполняются success_detail/count_detail/json_details.
+Результат возвращается из execute(); сохранение в API выполняет раннер.
 """
 import json
 import os
@@ -20,7 +20,7 @@ FDM_BASE_URL = "https://fdm-products-dev-eafdmmart.apps.yd-m6-kt22.vimpelcom.ru"
 
 # Добавляем родительский каталог в path для импорта _common
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import run_check_from_details
+from _common import ExecuteResult
 
 
 def _fetch_containers(cmdb_code: str):
@@ -49,18 +49,23 @@ def _fetch_containers(cmdb_code: str):
 
     return data
 
-def execute(app_code: str) -> None:
+def execute(app_code: str) -> ExecuteResult:
     containers = _fetch_containers(app_code)
-    details = []
+    details: list[dict] = []
     if containers:
         for c in containers:
             if not isinstance(c, dict):
                 continue
             details.append(
                 {
-                    "check": "true",
+                    "check": True,
                     "containerName": c.get("name"),
                     "containerCode": c.get("code"),
                 }
             )
-    run_check_from_details(app_code, SCRIPT_CODE, details)
+    return ExecuteResult(
+        app_code=app_code,
+        script_code=SCRIPT_CODE,
+        is_check=len(details) > 0,
+        details=details,
+    )
