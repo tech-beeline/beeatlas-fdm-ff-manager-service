@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from config import settings
-from db import get_all_fitness_functions, get_fitness_function_by_code, get_latest_check_result
+from db import (
+    add_fitness_function,
+    get_all_fitness_functions,
+    get_fitness_function_by_code,
+    get_latest_check_result,
+)
 
 # Если целевой каталог (например смонтированный volume) только для чтения — сканируем /scripts-src из образа.
 _scripts_dir_override: Optional[Path] = None
@@ -166,6 +171,29 @@ def materialize_missing_scripts_from_db() -> None:
             path.write_text(str(script), encoding="utf-8")
         except OSError:
             continue
+
+
+def materialize_missing_fitness_functions_from_scripts() -> None:
+    """
+    Для .py-скриптов из каталога scripts создаёт строки в fitness_function, если их ещё нет.
+    Нужно для кейса, когда скрипт есть в образе/каталоге, но проверка не заведена в БД.
+    """
+    existing = {
+        (row.get("code") or "").strip()
+        for row in get_all_fitness_functions()
+        if (row.get("code") or "").strip()
+    }
+    for code in list_scripts():
+        if code in existing:
+            continue
+        add_fitness_function(
+            code=code,
+            description=f"Автодобавленная проверка из scripts/{code}.py",
+            applicability=None,
+            auxiliary_check=False,
+            test=False,
+            create_only=True,
+        )
 
 
 def list_scripts() -> list[str]:

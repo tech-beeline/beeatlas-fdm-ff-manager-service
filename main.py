@@ -38,6 +38,7 @@ from script_runner import (
     ensure_scripts_dir,
     list_scripts,
     get_scripts_dir,
+    materialize_missing_fitness_functions_from_scripts,
     materialize_missing_scripts_from_db,
 )
 
@@ -188,6 +189,7 @@ class ProductActualResultsBody(BaseModel):
 def startup():
     ensure_scripts_dir(reset=True)
     init_schema()
+    materialize_missing_fitness_functions_from_scripts()
     materialize_missing_scripts_from_db()
 
 
