@@ -34,6 +34,15 @@ def _copy_bundled_into_dest(src: Path, dest: Path) -> None:
             shutil.copy2(item, target)
 
 
+def _clear_dir_contents(dest: Path) -> None:
+    """Удаляет все файлы и подкаталоги внутри dest, не удаляя сам каталог."""
+    for item in dest.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+
+
 def _configured_scripts_dir() -> Path:
     """Каталог скриптов из настроек, относительно корня приложения."""
     root = Path(__file__).resolve().parent
@@ -53,9 +62,10 @@ def get_scripts_dir() -> Path:
     return _configured_scripts_dir()
 
 
-def ensure_scripts_dir() -> None:
+def ensure_scripts_dir(reset: bool = False) -> None:
     """
-    Создаёт каталог скриптов при отсутствии и копирует в него файлы из /scripts-src
+    Создаёт каталог скриптов при отсутствии и копирует в него файлы из /scripts-src.
+    При reset=True предварительно очищает целевой каталог.
     (в образе Docker скрипты дублируются туда из исходного каталога — см. Dockerfile).
     Если запись в целевой каталог невозможна (только чтение) — используется /scripts-src без копирования.
     Если /scripts-src нет (локальный запуск), только гарантирует наличие каталога.
@@ -100,6 +110,15 @@ def ensure_scripts_dir() -> None:
             use_bundled()
             return
         raise
+
+    if reset:
+        try:
+            _clear_dir_contents(dest)
+        except OSError as e:
+            if should_use_bundled_exc(e):
+                use_bundled()
+                return
+            raise
 
     try:
         _copy_bundled_into_dest(BUNDLED_SCRIPTS_SRC, dest)

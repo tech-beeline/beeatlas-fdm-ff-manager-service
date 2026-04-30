@@ -182,7 +182,7 @@ class ProductActualResultsBody(BaseModel):
 
 @app.on_event("startup")
 def startup():
-    ensure_scripts_dir()
+    ensure_scripts_dir(reset=True)
     init_schema()
     materialize_missing_scripts_from_db()
 
