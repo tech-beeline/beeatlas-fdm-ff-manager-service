@@ -7,7 +7,7 @@ import urllib.request
 from datetime import datetime
 from typing import Any, Optional, Union
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exception_handlers import (
     http_exception_handler as default_http_exception_handler,
@@ -508,7 +508,14 @@ def _runnable_ff_codes_ordered() -> list[str]:
     "/api/v1/run/{code}",
     responses=_openapi_client_errors(400, 405, 422),
 )
-def run_one(code: str, body: RunRequest, docId: Optional[str] = None):
+def run_one(
+    code: str,
+    body: RunRequest,
+    docId: Optional[str] = Query(
+        default=None,
+        description="Идентификатор документа для загрузки в data перед запуском проверки",
+    ),
+):
     """
     Запуск проверки для продукта: скрипт .py или POST на URL из fitness_function.method.
     В теле запроса передаётся мнемоника приложения (поле app).
@@ -563,7 +570,13 @@ def run_one(code: str, body: RunRequest, docId: Optional[str] = None):
     "/api/v1/run-all",
     responses=_openapi_client_errors(400, 405, 422),
 )
-def run_all(body: RunRequest, docId: Optional[str] = None):
+def run_all(
+    body: RunRequest,
+    docId: Optional[str] = Query(
+        default=None,
+        description="Идентификатор документа для загрузки в data перед запуском проверок",
+    ),
+):
     """
     Запуск проверок для приложения: скрипты .py и внешние POST (fitness_function.method).
     Проверки с fitness_function.test = true не запускаются.
