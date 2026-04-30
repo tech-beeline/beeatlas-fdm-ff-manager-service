@@ -10,17 +10,14 @@
 import json
 import os
 import sys
-from urllib.request import urlopen, Request
-from urllib.error import URLError, HTTPError
+import urllib.parse
 
 # Код проверки = имя файла без расширения
 SCRIPT_CODE = os.path.splitext(os.path.basename(__file__))[0]
 
-FDM_BASE_URL = "https://eafdmmart-develop-fdm-products.apps.yd-m6-kt22.vimpelcom.ru"
-
 # Добавляем родительский каталог в path для импорта _common
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import ExecuteResult
+from _common import ExecuteResult, structurizr_http_client
 
 
 def _fetch_containers(cmdb_code: str):
@@ -28,17 +25,21 @@ def _fetch_containers(cmdb_code: str):
     if not cmdb_code:
         return None
 
-    url = f"{FDM_BASE_URL}/api/v1/product/{cmdb_code}/container"
+    safe_code = urllib.parse.quote(cmdb_code, safe="")
+    path = f"/product/api/v1/product/{safe_code}/container"
     try:
-        req = Request(url, method="GET")
-        with urlopen(req, timeout=10) as resp:
-            raw = resp.read().decode()
-    except (URLError, HTTPError, OSError) as exc:
-        print(f"Ошибка вызова FDM-сервиса: {exc}", file=sys.stderr)
+        client = structurizr_http_client()
+        status, raw_bytes = client.get(path)
+    except Exception as exc:
+        print(f"Ошибка вызова HMAC-сервиса: {exc}", file=sys.stderr)
+        return None
+
+    if not (200 <= status < 300):
+        print(f"HMAC-сервис вернул HTTP {status}", file=sys.stderr)
         return None
 
     try:
-        data = json.loads(raw)
+        data = json.loads(raw_bytes.decode("utf-8", errors="replace"))
     except ValueError:
         print("Некорректный JSON от FDM-сервиса", file=sys.stderr)
         return None
