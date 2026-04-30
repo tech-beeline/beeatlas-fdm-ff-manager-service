@@ -174,7 +174,11 @@ def _script_path(code: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
-def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]:
+def run_script(
+    code: str,
+    app_mnemonic: str,
+    structurizr_credentials: Optional[Tuple[str, str]] = None,
+) -> Tuple[bool, str, Optional[bool]]:
     """
     Запуск одного скрипта проверки для приложения.
     :param code: Код проверки (имя скрипта без .py), например SEQ01 или DEMOFF-1.
@@ -192,6 +196,11 @@ def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]
     env["FF_DB_PASSWORD"] = settings.db_password
     env["FF_DB_NAME"] = settings.db_name
     env["FF_API_BASE_URL"] = settings.api_base_url
+    if structurizr_credentials:
+        env["FF_STRUCTURIZR_API_KEY"] = structurizr_credentials[0]
+        env["FF_STRUCTURIZR_API_SECRET"] = structurizr_credentials[1]
+        env["FF_STRUCTURIZR_HTTP_BASE_URL"] = (settings.structurizr_http_base_url or "").strip()
+        env["FF_STRUCTURIZR_HTTP_TIMEOUT"] = str(settings.structurizr_http_timeout_seconds)
 
     try:
         ok, out, done, check_from_execute = _run_script_module(path, code, app_mnemonic, env)

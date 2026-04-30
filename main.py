@@ -29,6 +29,7 @@ from db import (
     save_product_ff_result,
 )
 from ff_runner import run_ff_check
+from structurizr_hmac import CredentialsFetchError, fetch_structurizr_credentials
 from script_runner import (
     ensure_scripts_dir,
     list_scripts,
@@ -497,7 +498,14 @@ def run_one(code: str, body: RunRequest):
             f"(не выполнены условия applicability в product_ff)",
         )
 
-    success, message, check_result = run_ff_check(code, body.app)
+    try:
+        sz_creds = fetch_structurizr_credentials(app_code)
+    except CredentialsFetchError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    success, message, check_result = run_ff_check(
+        code, body.app, structurizr_credentials=sz_creds
+    )
     if not success:
         raise HTTPException(status_code=400, detail=message)
     return {
@@ -537,13 +545,20 @@ def run_all(body: RunRequest):
             "message": "Нет доступных проверок: ни .py в каталоге scripts, ни внешнего URL (method) в БД (с учётом test)",
         }
 
+    try:
+        sz_creds = fetch_structurizr_credentials(app_code)
+    except CredentialsFetchError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
     results: dict = {}
     ran: set[str] = set()
 
     # 1) Сначала все с applicability NULL / пусто
     batch_null = [c for c in all_codes if _applicability_empty(ff_app_map.get(c))]
     for code in batch_null:
-        ok, msg, check_result = run_ff_check(code, body.app)
+        ok, msg, check_result = run_ff_check(
+            code, body.app, structurizr_credentials=sz_creds
+        )
         results[code] = {"success": ok, "message": msg, "check_result": check_result}
         ran.add(code)
 
@@ -559,7 +574,9 @@ def run_all(body: RunRequest):
         if not batch:
             break
         for code in batch:
-            ok, msg, check_result = run_ff_check(code, body.app)
+            ok, msg, check_result = run_ff_check(
+                code, body.app, structurizr_credentials=sz_creds
+            )
             results[code] = {"success": ok, "message": msg, "check_result": check_result}
             ran.add(code)
 

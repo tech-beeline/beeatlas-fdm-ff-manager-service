@@ -5,6 +5,8 @@
 
 Переменные окружения:
 - FF_API_BASE_URL — базовый URL сервиса (по умолчанию http://127.0.0.1:8000).
+- Structurizr HMAC: FF_STRUCTURIZR_HTTP_BASE_URL, FF_STRUCTURIZR_API_KEY, FF_STRUCTURIZR_API_SECRET
+  (задаётся раннером при POST /api/v1/run и /api/v1/run-all; в скриптах вызывайте structurizr_http_client()).
 """
 import json
 import os
@@ -12,7 +14,10 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Mapping, Optional, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Mapping, Optional, TypedDict, cast
+
+if TYPE_CHECKING:
+    from structurizr_hmac import StructurizrHmacClient
 
 
 class ExecuteResult(TypedDict):
@@ -108,6 +113,19 @@ def persist_execute_result(
         count_detail=count_detail,
         json_details=json_details,
     )
+
+
+def structurizr_http_client() -> "StructurizrHmacClient":
+    """
+    Клиент HTTP с HMAC (Structurizr) для запросов с заранее настроенного хоста.
+    Ключи не передаются в скрипт вручную — только при запуске из POST /run или /run-all.
+    """
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from structurizr_hmac import StructurizrHmacClient
+
+    return StructurizrHmacClient.from_env()
 
 
 def run_check(

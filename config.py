@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     api_base_url: str = "http://127.0.0.1:8000"
     # Таймаут HTTP POST при вызове внешней проверки (fitness_function.method)
     external_ff_timeout_seconds: float = 30.0
+    # Базовый URL FDM Products API (GET /api/v1/product/{app}) — получение structurizrApiKey/Secret
+    fdm_product_api_base_url: str = (
+        "https://eafdmmart-develop-fdm-products.apps.yd-m6-kt22.vimpelcom.ru"
+    )
+    fdm_product_api_timeout_seconds: float = 30.0
+    # Базовый URL API Structurizr для исходящих запросов из скриптов (HMAC)
+    structurizr_http_base_url: str = ""
+    structurizr_http_timeout_seconds: float = 30.0
 
     @property
     def database_url(self) -> str:

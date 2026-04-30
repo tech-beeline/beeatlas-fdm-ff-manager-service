@@ -32,7 +32,12 @@ def _post_json(url: str, body: dict, timeout: float) -> Tuple[int, str]:
         return e.code, txt
 
 
-def run_ff_check(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]:
+def run_ff_check(
+    code: str,
+    app_mnemonic: str,
+    *,
+    structurizr_credentials: Optional[Tuple[str, str]] = None,
+) -> Tuple[bool, str, Optional[bool]]:
     """
     Если в БД у фитнес-функции задан непустой method (URL) — POST { callId, productCode }, запись в outside_ff.
     Иначе — запуск скрипта .py как раньше (файл на диске; строка в БД не обязательна).
@@ -44,7 +49,7 @@ def run_ff_check(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool
         if method:
             return _invoke_external_post(method, row["id"], app_mnemonic)
 
-    return run_script(code, app_mnemonic)
+    return run_script(code, app_mnemonic, structurizr_credentials=structurizr_credentials)
 
 
 def _invoke_external_post(url: str, ff_id: int, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]:
