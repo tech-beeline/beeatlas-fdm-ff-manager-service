@@ -14,9 +14,34 @@
 - `__init__.py`
 - файлы, чьё имя начинается с `_` (например `_common.py`)
 
-## Аргументы командной строки
+## Контракт `execute(...)` и `data` из `docId`
 
-Менеджер запускает процесс так:
+При запуске через API раннер сначала пытается импортировать скрипт как модуль и вызвать функцию `execute(...)`.
+
+Поддерживаются оба варианта сигнатуры:
+
+```python
+def execute(app_code: str) -> ExecuteResult:
+    ...
+```
+
+```python
+def execute(app_code: str, data: dict[str, Any]) -> ExecuteResult:
+    ...
+```
+
+- `app_code` — код продукта.
+- `data` — словарь документа, который сервис загрузил по `docId` перед запуском:
+  - `POST /api/v1/run/{code}?docId=<id>`
+  - `POST /api/v1/run-all?docId=<id>`
+- Если `docId` не передан, `data` будет `{}`.
+- Для обратной совместимости `data` также выставляется как глобальная переменная модуля скрипта.
+
+Рекомендуется использовать явный аргумент `data` в сигнатуре `execute`.
+
+## Аргументы командной строки (fallback-режим)
+
+Если в скрипте нет callable-функции `execute`, менеджер запускает процесс как раньше:
 
 ```bash
 python /path/to/scripts/<КОД>.py <alias_продукта>
@@ -32,7 +57,30 @@ import sys
 app_code = sys.argv[1] if len(sys.argv) > 1 else ""
 ```
 
-## Запись результата: `run_check` из `_common`
+## Запись результата: `ExecuteResult` (рекомендуется) или `run_check` из `_common`
+
+Предпочтительный путь — вернуть из `execute` структуру `ExecuteResult`:
+
+```python
+from _common import ExecuteResult
+
+def execute(app_code: str, data: dict[str, Any]) -> ExecuteResult:
+    details = [{"check": True, "item": "ok"}]
+    return ExecuteResult(
+        app_code=app_code,
+        script_code=SCRIPT_CODE,
+        is_check=True,
+        details=details,
+    )
+```
+
+Раннер сам:
+
+- провалидирует результат,
+- посчитает `count_detail` и `success_detail`,
+- сохранит в `product_ff`.
+
+`run_check(...)` остаётся рабочим для старых скриптов и fallback-режима.
 
 Импортируйте общую функцию (добавьте каталог скриптов в `sys.path`, как в примерах `DEMOFF-*.py`):
 
@@ -93,6 +141,27 @@ run_check(
 | `FF_API_BASE_URL`    | Базовый URL API (например `http://127.0.0.1:8000`). Именно сюда уходит запись результата. |
 | `FF_DB_*`            | Параметры БД (для самого сервиса; скриптам для записи результата **не нужны**). |
 
+Если запуск инициирован через `POST /api/v1/run/{code}` или `POST /api/v1/run-all`, также передаются переменные для HMAC-клиента:
+
+- `FF_STRUCTURIZR_HTTP_BASE_URL`
+- `FF_STRUCTURIZR_API_KEY`
+- `FF_STRUCTURIZR_API_SECRET`
+- `FF_STRUCTURIZR_HTTP_TIMEOUT`
+
+## Готовый HTTP-клиент с HMAC (`_common.structurizr_http_client`)
+
+Для вызовов внешних сервисов через Structurizr HMAC используйте helper:
+
+```python
+from _common import structurizr_http_client
+
+client = structurizr_http_client()
+status, raw_bytes = client.get("/product/api/v1/product/DEMO/container")
+```
+
+- Не нужно вручную подписывать запросы.
+- Обрабатывайте не-2xx статусы и ошибки сети так же, как в `scripts/DEMOFF-*.py`.
+
 При **ручном** запуске скрипта поднимите сервис FF Manager и при необходимости задайте:
 
 ```bash
@@ -103,25 +172,23 @@ python scripts/MYCHK-1.py DEMO
 ## Минимальный шаблон
 
 ```python
-#!/usr/bin/env python3
 import os
 import sys
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import run_check
+from _common import ExecuteResult
 
 SCRIPT_CODE = os.path.splitext(os.path.basename(__file__))[0]
 
-if __name__ == "__main__":
-    app_code = sys.argv[1] if len(sys.argv) > 1 else ""
-    ok = bool(app_code)  # ваша логика
-    run_check(
-        app_code,
-        SCRIPT_CODE,
+def execute(app_code: str, data: dict[str, Any]) -> ExecuteResult:
+    ok = bool(app_code)
+    details = [{"check": ok, "appCode": app_code, "docKeys": list(data.keys())}]
+    return ExecuteResult(
+        app_code=app_code,
+        script_code=SCRIPT_CODE,
         is_check=ok,
-        success_detail=1 if ok else 0,
-        count_detail=1,
-        json_details=None,
+        details=details,
     )
 ```
 

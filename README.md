@@ -24,9 +24,10 @@ FF_DB_NAME=mydatabase
 FF_SCRIPTS_DIR=scripts
 FF_API_BASE_URL=http://127.0.0.1:8000
 FF_EXTERNAL_FF_TIMEOUT_SECONDS=30
+FF_DOCUMENTS_API_BASE_URL=
 ```
 
-`FF_API_BASE_URL` — базовый URL сервиса для скриптов проверок (запись результата через API). `FF_EXTERNAL_FF_TIMEOUT_SECONDS` — таймаут HTTP POST при вызове внешней проверки (`fitness_function.method`).
+`FF_API_BASE_URL` — базовый URL сервиса для скриптов проверок (запись результата через API). `FF_EXTERNAL_FF_TIMEOUT_SECONDS` — таймаут HTTP POST при вызове внешней проверки (`fitness_function.method`). `FF_DOCUMENTS_API_BASE_URL` — базовый URL document-сервиса для загрузки документа по `docId` перед запуском FF.
 
 ## Запуск
 
@@ -51,8 +52,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | GET | `/api/v1/scripts` | Коды всех скриптов проверок (файлы `*.py` в каталоге, кроме `_*.py` и `__init__.py`) |
 | GET | `/api/v1/fitness-functions` | Список записей `fitness_function` из БД |
 | POST | `/api/v1/fitness-function` | Создание проверки (`multipart/form-data`; при занятом коде — 409) |
-| POST | `/api/v1/run/{code}` | Запуск одной проверки для приложения; тело JSON: `{"app": "<мнемоника>"}` |
-| POST | `/api/v1/run-all` | Запуск всех подходящих проверок; тело: `{"app": "<мнемоника>"}` |
+| POST | `/api/v1/run/{code}` | Запуск одной проверки для приложения; тело JSON: `{"app": "<мнемоника>"}`; query `docId` (опц.) |
+| POST | `/api/v1/run-all` | Запуск всех подходящих проверок; тело: `{"app": "<мнемоника>"}`; query `docId` (опц.) |
 | POST | `/api/v1/ff/webhook` | Колбэк внешней проверки после вызова `method` |
 | POST | `/api/v1/product/{code}/ff` | Запись результата проверки в `product_ff` (используется скриптами через `run_check` в `_common.py`) |
 | GET | `/api/v1/product/{code}/actual-results` | Актуальные результаты основных проверок по продукту (без вспомогательных и тестовых) |
@@ -73,7 +74,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 Имя файла без `.py` — код проверки (например, `DEMOFF-1.py` → `DEMOFF-1`). Скрипт вызывается с одним аргументом — мнемоникой приложения.
 
-Переменные окружения при запуске скрипта задаёт сервис: `FF_DB_*`, `FF_API_BASE_URL`. Запись результата выполняется POST-запросом на `{FF_API_BASE_URL}/api/v1/product/{alias}/ff` (см. `scripts/_common.py`).
+Переменные окружения при запуске скрипта задаёт сервис: `FF_DB_*`, `FF_API_BASE_URL`, а для HMAC-клиента также `FF_STRUCTURIZR_HTTP_*` и `FF_STRUCTURIZR_API_*`. Запись результата выполняется POST-запросом на `{FF_API_BASE_URL}/api/v1/product/{alias}/ff` (см. `scripts/_common.py`).
 
 ## База данных
 
