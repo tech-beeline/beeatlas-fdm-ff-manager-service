@@ -48,6 +48,17 @@ app = FastAPI(title="FF Manager", description="Менеджер проверок
 _PATHS_WITHOUT_CUSTOM_4XX = frozenset({"/health", "/api/v1", "/api/v1/"})
 
 
+def _read_tech_version() -> str:
+    """Читает техническую версию сборки из файла TECH_VERSION."""
+    path = os.path.join(os.path.dirname(__file__), "TECH_VERSION")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            value = f.read().strip()
+    except OSError:
+        return "unknown"
+    return value or "unknown"
+
+
 def _http_exception_detail_to_ru(detail: Any) -> str:
     if isinstance(detail, list):
         parts = [_http_exception_detail_to_ru(x) for x in detail]
@@ -199,6 +210,7 @@ def root():
     """Минимальная служебная точка; интерактив — в Swagger UI."""
     return {
         "service": "FF Manager",
+        "tech_version": _read_tech_version(),
         "docs": "/docs",
         "openapi": "/openapi.json",
         "health": "/health",
