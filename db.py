@@ -123,7 +123,7 @@ def get_fitness_function_by_code(code: str) -> Optional[dict]:
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, code, method, test
+            SELECT id, code, description, applicability, auxiliary_check, test, script, method
             FROM {SCHEMA}.fitness_function
             WHERE code = %s
             """,
