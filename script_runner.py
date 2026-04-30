@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from config import settings
-from db import get_all_fitness_functions, get_latest_check_result
+from db import get_all_fitness_functions, get_fitness_function_by_code, get_latest_check_result
 
 # Если целевой каталог (например смонтированный volume) только для чтения — сканируем /scripts-src из образа.
 _scripts_dir_override: Optional[Path] = None
@@ -194,6 +194,40 @@ def _script_path(code: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
+def _sync_script_from_db(code: str) -> Optional[Path]:
+    """
+    Синхронизирует файл скрипта на диске из fitness_function.script (если поле непустое).
+    Возвращает путь к файлу при успехе.
+    """
+    row = get_fitness_function_by_code(code.strip())
+    if not row:
+        return None
+    script_text = row.get("script")
+    if script_text is None or not str(script_text).strip():
+        return None
+
+    scripts_dir = get_scripts_dir()
+    try:
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    path = scripts_dir / f"{code}.py"
+    desired = str(script_text)
+    if path.is_file():
+        try:
+            current = path.read_text(encoding="utf-8")
+            if current == desired:
+                return path
+        except OSError:
+            pass
+    try:
+        path.write_text(desired, encoding="utf-8")
+    except OSError:
+        return None
+    return path if path.is_file() else None
+
+
 def run_script(
     code: str,
     app_mnemonic: str,
@@ -206,7 +240,10 @@ def run_script(
     :param app_mnemonic: Мнемоника приложения (строка).
     :return: (успех, вывод скрипта или сообщение об ошибке, результат проверки is_check или None).
     """
-    path = _script_path(code)
+    # Приоритет источника правды — script в БД (если заполнен).
+    path = _sync_script_from_db(code)
+    if not path:
+        path = _script_path(code)
     if not path:
         return False, f"Скрипт с кодом '{code}' не найден.", None
 
@@ -244,6 +281,16 @@ def run_script(
         if result.returncode != 0:
             return False, out or f"Код возврата: {result.returncode}", None
         check_result = get_latest_check_result(app_mnemonic, code)
+        if check_result is None:
+            return (
+                False,
+                out
+                or (
+                    "Скрипт завершился без ошибки, но результат проверки не был записан. "
+                    "Добавьте execute(app_code, data) -> ExecuteResult или явный вызов run_check(...)."
+                ),
+                None,
+            )
         return True, out or "OK", check_result
     except subprocess.TimeoutExpired:
         return False, "Таймаут выполнения скрипта.", None

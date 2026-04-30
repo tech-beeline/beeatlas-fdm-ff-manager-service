@@ -300,6 +300,35 @@ def _json_details_for_db(value: Any) -> Optional[str]:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _normalize_script_text_input(raw_script: str) -> str:
+    """
+    Нормализует текст скрипта из multipart-поля `script`.
+    Если клиент передал JSON-строку (с обрамляющими кавычками и \\n),
+    пытаемся декодировать её в обычный многострочный Python-код.
+    """
+    text = raw_script
+    candidate = raw_script.strip()
+    if len(candidate) >= 2 and candidate[0] == '"' and candidate[-1] == '"':
+        try:
+            decoded = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            decoded = None
+        if isinstance(decoded, str):
+            text = decoded
+    return text
+
+
+def _validate_python_script_text(script_text: str, *, field_name: str) -> None:
+    """Базовая проверка синтаксиса Python-кода перед сохранением скрипта."""
+    try:
+        compile(script_text, f"<{field_name}>", "exec")
+    except SyntaxError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Скрипт в поле '{field_name}' содержит синтаксическую ошибку: {e.msg}",
+        ) from e
+
+
 def _form_bool_optional(value: Optional[str]) -> bool:
     """Распознаёт true из multipart/form (чекбокс: true/on/1/yes)."""
     if value is None:
@@ -335,6 +364,7 @@ async def _perform_fitness_function_upsert(
             content = None
 
         if content is not None:
+            _validate_python_script_text(content, field_name="script_file")
             script_text = content
             set_script = True
         else:
@@ -342,7 +372,9 @@ async def _perform_fitness_function_upsert(
 
         attached = True
     elif script is not None and script.strip() != "":
-        script_text = script
+        normalized_script = _normalize_script_text_input(script)
+        _validate_python_script_text(normalized_script, field_name="script")
+        script_text = normalized_script
         set_script = True
         attached = True
     else:
