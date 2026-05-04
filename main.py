@@ -26,6 +26,7 @@ from db import (
     get_fitness_function_applicabilities,
     get_fitness_function_code_to_id,
     get_fitness_function_codes_with_test_true,
+    json_details_value_to_db_str,
     process_ff_webhook,
     product_has_actual_ff_pass,
     add_fitness_function,
@@ -163,6 +164,10 @@ class FitnessFunctionItem(BaseModel):
     test: bool = Field(..., description="Тестовая проверка")
     script: Optional[str] = Field(None, description="Текст скрипта (.py) в БД")
     method: Optional[str] = Field(None, description="URL внешнего POST для внешней проверки")
+    method_synchronous: bool = Field(
+        False,
+        description="Если true и задан method — ответ HTTP обрабатывается сразу; иначе ожидается webhook",
+    )
 
 
 class ActualResultRow(BaseModel):
@@ -308,11 +313,7 @@ class FfWebhookBody(BaseModel):
 
 
 def _json_details_for_db(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False)
+    return json_details_value_to_db_str(value)
 
 
 def _normalize_script_text_input(raw_script: str) -> str:
@@ -369,6 +370,8 @@ async def _perform_fitness_function_upsert(
     is_test: bool,
     method: Optional[str],
     set_method: bool,
+    method_synchronous: bool,
+    set_method_synchronous: bool,
     script_file: Optional[StarletteUploadFile],
     script: Optional[str],
 ) -> Optional[dict]:
@@ -415,6 +418,8 @@ async def _perform_fitness_function_upsert(
         set_script=set_script,
         method=method,
         set_method=set_method,
+        method_synchronous=method_synchronous,
+        set_method_synchronous=set_method_synchronous,
         create_only=True,
     )
 
@@ -434,9 +439,11 @@ async def _perform_fitness_function_upsert(
 
     row = get_fitness_function_by_code(code)
     method_stored = None
+    method_sync_stored = False
     if row is not None:
         m = (row.get("method") or "").strip()
         method_stored = m if m else None
+        method_sync_stored = bool(row.get("method_synchronous"))
 
     return {
         "id": ff_id,
@@ -448,6 +455,7 @@ async def _perform_fitness_function_upsert(
         "script_stored": set_script,
         "script_attached": attached,
         "method": method_stored,
+        "method_synchronous": method_sync_stored,
     }
 
 
@@ -468,6 +476,10 @@ async def create_fitness_function(
         None,
         description="URL внешнего POST (пустой или не передавать — без внешнего вызова)",
     ),
+    method_synchronous: Optional[str] = Form(
+        None,
+        description="Если method задан: true — синхронный HTTP (ответ как webhook); иначе асинхронный колбэк",
+    ),
 ):
     """
     **multipart/form-data** — только создание новой проверки. Если код уже есть — **409 Conflict**.
@@ -475,6 +487,7 @@ async def create_fitness_function(
     """
     aux = _form_bool_optional(auxiliary_check)
     is_test = _form_bool_optional(test)
+    msync = _form_bool_optional(method_synchronous)
     method_for_db = None
     if method is not None:
         s = str(method).strip()
@@ -493,6 +506,8 @@ async def create_fitness_function(
         is_test=is_test,
         method=method_for_db,
         set_method=True,
+        method_synchronous=msync,
+        set_method_synchronous=True,
         script_file=script_file,
         script=script,
     )
@@ -578,7 +593,7 @@ def run_one(
     В теле запроса передаётся мнемоника приложения (поле app).
     Перед запуском проверяется applicability: NULL или все перечисленные проверки
     имеют в product_ff актуальную запись с is_check = true.
-    В ответе check_result — для скрипта результат из product_ff; для внешней проверки обычно null до вызова POST /api/v1/ff/webhook.
+    В ответе check_result — для скрипта и синхронной HTTP-проверки результат из ответа; для асинхронной внешней проверки обычно null до вызова POST /api/v1/ff/webhook.
     """
     app_code = body.app.strip()
     if not app_code:
@@ -599,11 +614,13 @@ def run_one(
     except CredentialsFetchError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    doc_id_param: Optional[str] = None
     data: dict[str, Any] = {}
     if docId is not None:
         raw_doc_id = str(docId).strip()
         if not raw_doc_id:
             raise HTTPException(status_code=400, detail="Параметр docId не может быть пустым")
+        doc_id_param = raw_doc_id
         data = _fetch_document_data(raw_doc_id)
 
     success, message, check_result = run_ff_check(
@@ -611,6 +628,7 @@ def run_one(
         body.app,
         structurizr_credentials=sz_creds,
         data=data,
+        doc_id=doc_id_param,
     )
     if not success:
         raise HTTPException(status_code=400, detail=message)
@@ -662,11 +680,13 @@ def run_all(
     except CredentialsFetchError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    doc_id_param: Optional[str] = None
     data: dict[str, Any] = {}
     if docId is not None:
         raw_doc_id = str(docId).strip()
         if not raw_doc_id:
             raise HTTPException(status_code=400, detail="Параметр docId не может быть пустым")
+        doc_id_param = raw_doc_id
         data = _fetch_document_data(raw_doc_id)
 
     results: dict = {}
@@ -680,6 +700,7 @@ def run_all(
             body.app,
             structurizr_credentials=sz_creds,
             data=data,
+            doc_id=doc_id_param,
         )
         results[code] = {"success": ok, "message": msg, "check_result": check_result}
         ran.add(code)
@@ -701,6 +722,7 @@ def run_all(
                 body.app,
                 structurizr_credentials=sz_creds,
                 data=data,
+                doc_id=doc_id_param,
             )
             results[code] = {"success": ok, "message": msg, "check_result": check_result}
             ran.add(code)

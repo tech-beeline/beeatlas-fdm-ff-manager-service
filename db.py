@@ -1,5 +1,6 @@
 """Подключение к PostgreSQL и инициализация схемы ff."""
-from typing import Optional
+import json
+from typing import Any, Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -123,7 +124,8 @@ def get_fitness_function_by_code(code: str) -> Optional[dict]:
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, code, description, applicability, auxiliary_check, test, script, method
+            SELECT id, code, description, applicability, auxiliary_check, test, script, method,
+                   method_synchronous
             FROM {SCHEMA}.fitness_function
             WHERE code = %s
             """,
@@ -153,6 +155,15 @@ def delete_outside_ff_by_call_id(call_id: str) -> None:
             f"DELETE FROM {SCHEMA}.outside_ff WHERE call_id = %s",
             (call_id.strip(),),
         )
+
+
+def json_details_value_to_db_str(value: Any) -> Optional[str]:
+    """Нормализация поля details из JSON тела (webhook / синхронный HTTP) в строку для product_ff."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
 
 
 def process_ff_webhook(
@@ -263,6 +274,8 @@ def add_fitness_function(
     set_script: bool = False,
     method: Optional[str] = None,
     set_method: bool = False,
+    method_synchronous: bool = False,
+    set_method_synchronous: bool = False,
     create_only: bool = False,
 ) -> Optional[int]:
     """
@@ -273,6 +286,8 @@ def add_fitness_function(
     set_script: если True — записать/обновить колонку script; если False — при UPDATE колонку script не менять.
     method: URL внешнего POST; непустой method означает внешнюю проверку (вызов вместо скрипта).
     set_method: если True — записать/очистить колонку method (пустая строка -> NULL).
+    method_synchronous: при непустом method — true = ответ HTTP записывается сразу (как webhook), false = колбэк POST /api/v1/ff/webhook.
+    set_method_synchronous: если True — обновить колонку method_synchronous.
     auxiliary_check: вспомогательная проверка (не в основных результатах продукта, но в run-all).
     test: тестовая проверка (не в run-all и не в actual-results продукта).
     При обновлении: если test меняется с true на false — удаляются product_ff и outside_ff для этой функции.
@@ -317,6 +332,9 @@ def add_fitness_function(
             if set_method:
                 sets.append("method = %s")
                 params.append(method_value)
+            if set_method_synchronous:
+                sets.append("method_synchronous = %s")
+                params.append(method_synchronous)
             params.append(ff_id)
             cur.execute(
                 f"""
@@ -328,11 +346,13 @@ def add_fitness_function(
             )
             return ff_id
 
+        ms_val = method_synchronous if set_method_synchronous else False
         cur.execute(
             f"""
             INSERT INTO {SCHEMA}.fitness_function
-                (code, description, applicability, auxiliary_check, test, script, method)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (code, description, applicability, auxiliary_check, test, script, method,
+                 method_synchronous)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -343,6 +363,7 @@ def add_fitness_function(
                 test,
                 script if set_script else None,
                 method_value if set_method else None,
+                ms_val,
             ),
         )
         new_row = cur.fetchone()
@@ -354,7 +375,8 @@ def get_all_fitness_functions() -> list[dict]:
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, code, description, applicability, auxiliary_check, test, script, method
+            SELECT id, code, description, applicability, auxiliary_check, test, script, method,
+                   method_synchronous
             FROM {SCHEMA}.fitness_function
             ORDER BY id
             """
@@ -517,6 +539,36 @@ def init_schema():
             ALTER TABLE {SCHEMA}.fitness_function
             ADD COLUMN IF NOT EXISTS method TEXT;
         """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.fitness_function
+            ADD COLUMN IF NOT EXISTS method_synchronous BOOLEAN NOT NULL DEFAULT false;
+        """)
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.schema_meta (
+                key TEXT PRIMARY KEY
+            );
+            """
+        )
+        # Одноразово: для уже существовавших проверок с непустым method признак синхронности = false (асинхронный webhook).
+        cur.execute(
+            f"""
+            WITH ins AS (
+                INSERT INTO {SCHEMA}.schema_meta (key)
+                SELECT 'fitness_function_method_synchronous_async_backfill'
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {SCHEMA}.schema_meta
+                    WHERE key = 'fitness_function_method_synchronous_async_backfill'
+                )
+                RETURNING 1
+            )
+            UPDATE {SCHEMA}.fitness_function
+            SET method_synchronous = false
+            WHERE method IS NOT NULL
+              AND BTRIM(method) <> ''
+              AND EXISTS (SELECT 1 FROM ins);
+            """
+        )
 
         cur.execute(f"DROP TABLE IF EXISTS {SCHEMA}.product;")
 
