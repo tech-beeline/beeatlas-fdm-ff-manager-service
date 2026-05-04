@@ -85,3 +85,4 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - **`ff.product_ff`** — результаты: `product_code`, `ff_id`, `is_check`, `is_actual`, `json_details`, `count_detail`, `success_detail`, `create_date`.
 
 При первом старте в `fitness_function` добавляются тестовые строки **DEMOFF-1** и **DEMOFF-2**, если их ещё нет. Отдельная таблица каталога продуктов не используется: продукт задаётся строкой `product_code`.
+
