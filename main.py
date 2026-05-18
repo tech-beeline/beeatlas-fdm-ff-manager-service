@@ -663,7 +663,6 @@ def run_all(
 
     ff_app_map = get_fitness_function_applicabilities()
     code_to_id = get_fitness_function_code_to_id()
-    disk_codes = list_scripts()
     test_codes = get_fitness_function_codes_with_test_true()
     all_codes = _runnable_ff_codes_ordered()
 
@@ -734,8 +733,7 @@ def run_all(
     ]
     skipped.extend(
         {"code": c, "reason": "проверка с флагом test не входит в run-all"}
-        for c in disk_codes
-        if c in test_codes
+        for c in sorted(test_codes)
     )
 
     if not results and skipped:
