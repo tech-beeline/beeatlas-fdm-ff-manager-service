@@ -14,7 +14,10 @@ from db import (
     json_details_value_to_db_str,
     process_ff_webhook,
 )
+from run_result import build_check_result, build_check_result_pending
 from script_runner import run_script
+
+CheckResultPayload = Optional[dict[str, Any]]
 
 
 def _url_with_doc_id_query(url: str, doc_id: Optional[str]) -> str:
@@ -104,15 +107,17 @@ def run_ff_check(
     structurizr_credentials: Optional[Tuple[str, str]] = None,
     data: Optional[dict[str, Any]] = None,
     doc_id: Optional[str] = None,
-) -> Tuple[bool, str, Optional[bool]]:
+) -> Tuple[bool, str, CheckResultPayload]:
     """
     Если в БД у фитнес-функции задан непустой method (URL) — POST { callId, productCode }, запись в outside_ff.
     method_synchronous: ответ обрабатывается сразу (как webhook) или ожидается POST /api/v1/ff/webhook.
     doc_id: при передаче в run добавляется query-параметр docId к URL method.
     Иначе — запуск скрипта .py как раньше.
-    Возвращает (успех, сообщение, is_check из product_ff или None для асинхронной внешней проверки).
+    Возвращает (успех, сообщение, check_result: объект с is_check/details или None для асинхронной внешней проверки).
+    Для test=true результат в product_ff не сохраняется; детали отдаются в check_result.
     """
     row = get_fitness_function_by_code(code.strip())
+    is_test = bool(row and row.get("test") is True)
     if row:
         method = (row.get("method") or "").strip()
         if method:
@@ -123,6 +128,7 @@ def run_ff_check(
                 app_mnemonic,
                 synchronous=synchronous,
                 doc_id=doc_id,
+                is_test=is_test,
             )
 
     return run_script(
@@ -130,6 +136,7 @@ def run_ff_check(
         app_mnemonic,
         structurizr_credentials=structurizr_credentials,
         data=data,
+        is_test=is_test,
     )
 
 
@@ -140,7 +147,8 @@ def _invoke_external_post(
     *,
     synchronous: bool,
     doc_id: Optional[str],
-) -> Tuple[bool, str, Optional[bool]]:
+    is_test: bool,
+) -> Tuple[bool, str, CheckResultPayload]:
     call_id = str(uuid.uuid4())
     product_code = app_mnemonic.strip()
     insert_outside_ff_call(ff_id=ff_id, product_code=product_code, call_id=call_id)
@@ -157,6 +165,15 @@ def _invoke_external_post(
             return False, f"Внешний сервис вернул HTTP {status}" + (f": {detail}" if detail else ""), None
 
         if not synchronous:
+            if is_test:
+                return (
+                    True,
+                    (
+                        f"Тестовая асинхронная проверка вызвана (callId={call_id}). "
+                        f"После POST /api/v1/ff/webhook опросите GET /api/v1/ff/call/{call_id}."
+                    ),
+                    build_check_result_pending(call_id),
+                )
             return (
                 True,
                 f"Внешняя проверка вызвана (callId={call_id}). Результат запишется через POST /api/v1/ff/webhook.",
@@ -183,7 +200,24 @@ def _invoke_external_post(
             return False, "Внутренняя ошибка: запись outside_ff не найдена после вызова", None
 
         msg = f"Синхронная внешняя проверка выполнена (callId={call_id})."
-        return True, msg, is_check
+        if is_test or outcome == "test_ok":
+            details_parsed = None
+            if json_details:
+                try:
+                    details_parsed = json.loads(json_details)
+                except (TypeError, json.JSONDecodeError):
+                    details_parsed = json_details
+            return (
+                True,
+                msg + (" Результат не сохранён (тестовая проверка)." if is_test else ""),
+                build_check_result(
+                    is_check,
+                    details=details_parsed,
+                    count_detail=count_detail,
+                    success_detail=success_detail,
+                ),
+            )
+        return True, msg, build_check_result(is_check)
 
     except (urllib.error.URLError, OSError, ValueError) as e:
         delete_outside_ff_by_call_id(call_id)

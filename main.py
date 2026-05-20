@@ -31,9 +31,11 @@ from db import (
     product_has_actual_ff_pass,
     add_fitness_function,
     get_fitness_function_by_code,
+    get_outside_ff_call,
     save_product_ff_result,
 )
 from ff_runner import run_ff_check
+from run_result import check_result_from_outside_ff_row
 from config import settings
 from structurizr_hmac import CredentialsFetchError, fetch_structurizr_credentials
 from script_runner import (
@@ -246,6 +248,18 @@ class RunRequest(BaseModel):
     app: str
 
 
+class RunCheckResult(BaseModel):
+    """Результат одного запуска проверки в ответе POST /api/v1/run/{code}."""
+
+    is_check: bool
+    details: Optional[Any] = Field(
+        default=None,
+        description="Детали расчёта (для тестовых проверок — всегда при успешном execute/синхронном HTTP)",
+    )
+    countDetail: Optional[int] = None
+    successDetail: Optional[int] = None
+
+
 def _fetch_document_data(document_id: str) -> dict[str, Any]:
     base = (settings.documents_api_base_url or "").strip().rstrip("/")
     if not base:
@@ -374,8 +388,10 @@ async def _perform_fitness_function_upsert(
     set_method_synchronous: bool,
     script_file: Optional[StarletteUploadFile],
     script: Optional[str],
+    *,
+    create_only: bool,
 ) -> Optional[dict]:
-    """Создание проверки: сначала INSERT в БД, затем запись .py на диск. Если code уже есть — None (409)."""
+    """Создание или обновление проверки: INSERT/UPDATE в БД, затем запись .py на диск."""
     set_script = False
     script_text: Optional[str] = None
     binary_payload: Optional[bytes] = None
@@ -420,7 +436,7 @@ async def _perform_fitness_function_upsert(
         set_method=set_method,
         method_synchronous=method_synchronous,
         set_method_synchronous=set_method_synchronous,
-        create_only=True,
+        create_only=create_only,
     )
 
     if ff_id is None:
@@ -483,10 +499,12 @@ async def create_fitness_function(
 ):
     """
     **multipart/form-data** — только создание новой проверки. Если код уже есть — **409 Conflict**.
+    Новая проверка всегда создаётся с **test = true** (тестовый режим); поле `test` в форме игнорируется.
+    После отладки снимите флаг через **PUT /api/v1/fitness-function/{code}**.
     Поля `script` и/или файл `script_file`; колонка **method** задаётся из поля `method` (пусто → NULL).
     """
     aux = _form_bool_optional(auxiliary_check)
-    is_test = _form_bool_optional(test)
+    is_test = True
     msync = _form_bool_optional(method_synchronous)
     method_for_db = None
     if method is not None:
@@ -510,11 +528,87 @@ async def create_fitness_function(
         set_method_synchronous=True,
         script_file=script_file,
         script=script,
+        create_only=True,
     )
     if result is None:
         raise HTTPException(
             status_code=409,
             detail=f"Проверка с кодом '{c}' уже существует",
+        )
+    return result
+
+
+@app.put(
+    "/api/v1/fitness-function/{code}",
+    summary="Обновить проверку (multipart)",
+    responses=_openapi_client_errors(404, 405, 422),
+)
+async def update_fitness_function(
+    code: str,
+    description: str = Form(..., description="Описание"),
+    applicability: Optional[str] = Form(None),
+    auxiliary_check: Optional[str] = Form(None),
+    test: Optional[str] = Form(
+        None,
+        description="Тестовая проверка: false — перевести в боевой режим (результаты сохраняются в product_ff)",
+    ),
+    script: Optional[str] = Form(None),
+    script_file: UploadFile = File(None),
+    method: Optional[str] = Form(
+        None,
+        description="URL внешнего POST (пустой или не передавать — без внешнего вызова)",
+    ),
+    method_synchronous: Optional[str] = Form(
+        None,
+        description="Если method задан: true — синхронный HTTP (ответ как webhook); иначе асинхронный колбэк",
+    ),
+):
+    """
+    **multipart/form-data** — обновление существующей проверки. Если код не найден — **404**.
+    При смене **test** с true на false удаляются накопленные результаты product_ff и outside_ff для этой проверки.
+    """
+    existing_row = get_fitness_function_by_code(code.strip())
+    if not existing_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Проверка с кодом '{code.strip()}' не найдена",
+        )
+
+    aux = _form_bool_optional(auxiliary_check)
+    if test is None:
+        is_test = bool(existing_row.get("test"))
+    else:
+        is_test = _form_bool_optional(test)
+    msync = _form_bool_optional(method_synchronous)
+    method_for_db = None
+    if method is not None:
+        s = str(method).strip()
+        method_for_db = s if s else None
+
+    applicability_s = str(applicability).strip() if applicability is not None else None
+    if applicability_s == "":
+        applicability_s = None
+
+    c = code.strip()
+
+    result = await _perform_fitness_function_upsert(
+        code=c,
+        description=description,
+        applicability=applicability_s,
+        aux=aux,
+        is_test=is_test,
+        method=method_for_db,
+        set_method=True,
+        method_synchronous=msync,
+        set_method_synchronous=True,
+        script_file=script_file,
+        script=script,
+        create_only=False,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Проверка с кодом '{c}' не найдена",
         )
     return result
 
@@ -591,23 +685,29 @@ def run_one(
     """
     Запуск проверки для продукта: скрипт .py или POST на URL из fitness_function.method.
     В теле запроса передаётся мнемоника приложения (поле app).
-    Перед запуском проверяется applicability: NULL или все перечисленные проверки
-    имеют в product_ff актуальную запись с is_check = true.
-    В ответе check_result — для скрипта и синхронной HTTP-проверки результат из ответа; для асинхронной внешней проверки обычно null до вызова POST /api/v1/ff/webhook.
+    Для проверок с **test = false** перед запуском проверяется applicability.
+    Для **test = true** applicability не проверяется; результат не сохраняется в product_ff,
+    детали расчёта возвращаются в **check_result** (is_check, details, countDetail, successDetail).
+    Для тестовой асинхронной HTTP-проверки в check_result — `{ "pending": true, "callId": "..." }`;
+    после webhook опросите **GET /api/v1/ff/call/{callId}**. Боевая асинхронная проверка — check_result null до webhook (результат в product_ff).
     """
     app_code = body.app.strip()
     if not app_code:
         raise HTTPException(status_code=400, detail="Поле app не может быть пустым")
 
-    ff_app_map = get_fitness_function_applicabilities()
-    code_to_id = get_fitness_function_code_to_id()
-    applicability = ff_app_map.get(code)
-    if not _prerequisites_satisfied(app_code, applicability, code_to_id):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Правило проверки '{code}' неприменимо для продукта '{body.app}' "
-            f"(не выполнены условия applicability в product_ff)",
-        )
+    ff_row = get_fitness_function_by_code(code)
+    is_test_ff = bool(ff_row and ff_row.get("test") is True)
+
+    if not is_test_ff:
+        ff_app_map = get_fitness_function_applicabilities()
+        code_to_id = get_fitness_function_code_to_id()
+        applicability = ff_app_map.get(code)
+        if not _prerequisites_satisfied(app_code, applicability, code_to_id):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Правило проверки '{code}' неприменимо для продукта '{body.app}' "
+                f"(не выполнены условия applicability в product_ff)",
+            )
 
     try:
         sz_creds = fetch_structurizr_credentials(app_code)
@@ -751,6 +851,43 @@ def run_all(
     }
 
 
+@app.get(
+    "/api/v1/ff/call/{call_id}",
+    responses=_openapi_client_errors(404, 405),
+)
+def get_ff_call_result(call_id: str):
+    """
+    Статус асинхронного внешнего вызова по **callId** (из ответа POST /api/v1/run/{code} или исходящего POST на method).
+
+    - **pending** — webhook ещё не пришёл;
+    - **done** — для **test=true** в **check_result** детали расчёта (без product_ff);
+      для боевой проверки результат в **product_ff** / actual-results.
+    """
+    row = get_outside_ff_call(call_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Вызов с callId не найден (outside_ff)",
+        )
+    base = {
+        "callId": row["call_id"],
+        "ff_code": row.get("ff_code"),
+        "product_code": row.get("product_code"),
+        "test": bool(row.get("test")),
+    }
+    if row.get("status") != "done":
+        return {**base, "status": "pending", "check_result": None}
+    check_result = check_result_from_outside_ff_row(row)
+    if check_result is not None:
+        return {**base, "status": "done", "check_result": check_result}
+    return {
+        **base,
+        "status": "done",
+        "check_result": None,
+        "message": "Результат записан в product_ff (боевой режим). См. GET /api/v1/product/{code}/actual-results",
+    }
+
+
 @app.post(
     "/api/v1/ff/webhook",
     responses=_openapi_client_errors(404, 405, 422),
@@ -758,6 +895,7 @@ def run_all(
 def ff_webhook(body: FfWebhookBody):
     """
     Колбэк внешней проверки: по callId находит запись outside_ff, пишет результат в product_ff (как POST /api/v1/product/.../ff).
+    Для проверок с test=true в product_ff не пишется; результат хранится в outside_ff (опрос GET /api/v1/ff/call/{callId}).
     Повторный вызов с тем же callId при status=done даёт 200 без изменений.
     """
     json_details = _json_details_for_db(body.details)
@@ -775,7 +913,11 @@ def ff_webhook(body: FfWebhookBody):
         )
     if outcome == "already_done":
         return {"status": "already_processed"}
-    return {"status": "ok"}
+    if outcome == "test_ok":
+        row = get_outside_ff_call(body.call_id)
+        check_result = check_result_from_outside_ff_row(row) if row else None
+        return {"status": "ok", "saved_to_product_ff": False, "check_result": check_result}
+    return {"status": "ok", "saved_to_product_ff": True}
 
 
 @app.post(
@@ -801,7 +943,14 @@ def post_product_ff_result(code: str, body: ProductFfResultBody):
             status_code=404,
             detail=f"Проверка с кодом '{body.ff_code}' не найдена в fitness_function",
         )
-    return {"id": row_id, "product_code": code.strip(), "ff_code": body.ff_code.strip()}
+    if status == "test_mode":
+        return {
+            "saved": False,
+            "reason": "test",
+            "product_code": code.strip(),
+            "ff_code": body.ff_code.strip(),
+        }
+    return {"id": row_id, "product_code": code.strip(), "ff_code": body.ff_code.strip(), "saved": True}
 
 
 @app.get(

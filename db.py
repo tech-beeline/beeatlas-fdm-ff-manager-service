@@ -65,6 +65,25 @@ def get_fitness_function_code_to_id() -> dict[str, int]:
     return {r["code"]: r["id"] for r in rows}
 
 
+def fitness_function_is_test(*, ff_id: Optional[int] = None, ff_code: Optional[str] = None) -> bool:
+    """True, если проверка помечена test (результаты не пишутся в product_ff)."""
+    if ff_id is None and ff_code is None:
+        return False
+    with get_cursor() as cur:
+        if ff_id is not None:
+            cur.execute(
+                f"SELECT test FROM {SCHEMA}.fitness_function WHERE id = %s",
+                (ff_id,),
+            )
+        else:
+            cur.execute(
+                f"SELECT test FROM {SCHEMA}.fitness_function WHERE code = %s",
+                (ff_code.strip(),),
+            )
+        row = cur.fetchone()
+    return bool(row and row.get("test") is True)
+
+
 def save_product_ff_result(
     product_code: str,
     ff_code: str,
@@ -76,18 +95,20 @@ def save_product_ff_result(
     """
     Добавляет актуальную запись product_ff для продукта (внешний код) и проверки (ff code).
     Предыдущие актуальные записи для этой пары помечаются is_actual = false.
-    Возвращает ("ok", id_новой_строки) или ("fitness_function_not_found", None).
+    Возвращает ("ok", id), ("fitness_function_not_found", None) или ("test_mode", None) для test=true.
     """
     code_key = product_code.strip()
     code = ff_code.strip()
     with get_cursor() as cur:
         cur.execute(
-            f"SELECT id FROM {SCHEMA}.fitness_function WHERE code = %s",
+            f"SELECT id, test FROM {SCHEMA}.fitness_function WHERE code = %s",
             (code,),
         )
         row = cur.fetchone()
         if not row:
             return ("fitness_function_not_found", None)
+        if row.get("test") is True:
+            return ("test_mode", None)
         ff_id = row["id"]
 
         cur.execute(
@@ -198,38 +219,79 @@ def process_ff_webhook(
         pc = row["product_code"]
 
         cur.execute(
-            f"""
-            UPDATE {SCHEMA}.product_ff
-            SET is_actual = false
-            WHERE product_code = %s AND ff_id = %s AND is_actual = true
-            """,
-            (pc, ff_id),
+            f"SELECT test FROM {SCHEMA}.fitness_function WHERE id = %s",
+            (ff_id,),
         )
-        cur.execute(
-            f"""
-            INSERT INTO {SCHEMA}.product_ff (
-                product_code,
-                ff_id,
-                is_check,
-                is_actual,
-                json_details,
-                count_detail,
-                success_detail,
-                create_date
+        ff_row = cur.fetchone()
+        is_test = bool(ff_row and ff_row.get("test") is True)
+
+        if not is_test:
+            cur.execute(
+                f"""
+                UPDATE {SCHEMA}.product_ff
+                SET is_actual = false
+                WHERE product_code = %s AND ff_id = %s AND is_actual = true
+                """,
+                (pc, ff_id),
             )
-            VALUES (%s, %s, %s, true, %s, %s, %s, CURRENT_TIMESTAMP)
-            """,
-            (pc, ff_id, is_check, json_details, count_detail, success_detail),
-        )
+            cur.execute(
+                f"""
+                INSERT INTO {SCHEMA}.product_ff (
+                    product_code,
+                    ff_id,
+                    is_check,
+                    is_actual,
+                    json_details,
+                    count_detail,
+                    success_detail,
+                    create_date
+                )
+                VALUES (%s, %s, %s, true, %s, %s, %s, CURRENT_TIMESTAMP)
+                """,
+                (pc, ff_id, is_check, json_details, count_detail, success_detail),
+            )
+        if is_test:
+            cur.execute(
+                f"""
+                UPDATE {SCHEMA}.outside_ff
+                SET status = 'done',
+                    is_check = %s,
+                    json_details = %s,
+                    count_detail = %s,
+                    success_detail = %s
+                WHERE id = %s
+                """,
+                (is_check, json_details, count_detail, success_detail, row["id"]),
+            )
+        else:
+            cur.execute(
+                f"""
+                UPDATE {SCHEMA}.outside_ff
+                SET status = 'done'
+                WHERE id = %s
+                """,
+                (row["id"],),
+            )
+        return "test_ok" if is_test else "ok"
+
+
+def get_outside_ff_call(call_id: str) -> Optional[dict]:
+    """Запись outside_ff с кодом проверки и флагом test (для опроса асинхронного тестового вызова)."""
+    cid = call_id.strip()
+    with get_cursor() as cur:
         cur.execute(
             f"""
-            UPDATE {SCHEMA}.outside_ff
-            SET status = 'done'
-            WHERE id = %s
+            SELECT o.id, o.ff_id, o.product_code, o.call_id, o.status,
+                   o.is_check, o.json_details, o.count_detail, o.success_detail,
+                   ff.code AS ff_code, ff.test
+            FROM {SCHEMA}.outside_ff o
+            JOIN {SCHEMA}.fitness_function ff ON ff.id = o.ff_id
+            WHERE o.call_id = %s
             """,
-            (row["id"],),
+            (cid,),
         )
-        return "ok"
+        row = cur.fetchone()
+    return dict(row) if row is not None else None
 
 
 def product_has_actual_ff_pass(product_code: str, ff_id: int) -> bool:
@@ -542,6 +604,22 @@ def init_schema():
         cur.execute(f"""
             ALTER TABLE {SCHEMA}.fitness_function
             ADD COLUMN IF NOT EXISTS method_synchronous BOOLEAN NOT NULL DEFAULT false;
+        """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.outside_ff
+            ADD COLUMN IF NOT EXISTS is_check BOOLEAN;
+        """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.outside_ff
+            ADD COLUMN IF NOT EXISTS json_details TEXT;
+        """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.outside_ff
+            ADD COLUMN IF NOT EXISTS count_detail INT;
+        """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.outside_ff
+            ADD COLUMN IF NOT EXISTS success_detail INT;
         """)
         cur.execute(
             f"""

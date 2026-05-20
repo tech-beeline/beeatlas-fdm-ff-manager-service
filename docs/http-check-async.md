@@ -76,7 +76,15 @@
 - **`POST /api/v1/run/{code}`** — тело: `{"app": "<мнемоника>"}`; опционально query **`docId`**
 - **`POST /api/v1/run-all`** — то же; проверки с **`test = true`** в run-all не входят
 
-Перед запуском учитывается **`applicability`** (предусловия по другим проверкам в **`product_ff`**).
+Перед запуском учитывается **`applicability`** (предусловия по другим проверкам в **`product_ff`**), кроме проверок с **`test = true`** — для них applicability не проверяется, результат в **`product_ff`** не сохраняется.
+
+### Тестовая асинхронная проверка (`test = true`, `method_synchronous = false`)
+
+1. **`POST /api/v1/run/{code}`** — в **`check_result`**: `{ "pending": true, "callId": "<uuid>" }`.
+2. Ваш сервис отвечает **2xx**, затем вызывает **`POST /api/v1/ff/webhook`** с тем же **`callId`**.
+3. **`GET /api/v1/ff/call/{callId}`** — пока webhook не пришёл: **`status": "pending"`**; после: **`status": "done"`** и **`check_result`** с **`is_check`**, **`details`**, счётчиками (без записи в **`product_ff`**).
+
+Для отладки без ожидания webhook можно временно включить **`method_synchronous = true`** — тогда детали сразу в ответе **`run`**.
 
 ## Краткий сценарий
 

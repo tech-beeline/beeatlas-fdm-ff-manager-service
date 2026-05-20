@@ -11,6 +11,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from run_result import build_check_result, build_check_result_from_details_list
+
+CheckResultPayload = Optional[dict[str, Any]]
+
 from config import settings
 from db import (
     add_fitness_function,
@@ -261,12 +265,15 @@ def run_script(
     app_mnemonic: str,
     structurizr_credentials: Optional[Tuple[str, str]] = None,
     data: Optional[dict[str, Any]] = None,
-) -> Tuple[bool, str, Optional[bool]]:
+    *,
+    is_test: bool = False,
+) -> Tuple[bool, str, CheckResultPayload]:
     """
     Запуск одного скрипта проверки для приложения.
     :param code: Код проверки (имя скрипта без .py), например SEQ01 или DEMOFF-1.
     :param app_mnemonic: Мнемоника приложения (строка).
-    :return: (успех, вывод скрипта или сообщение об ошибке, результат проверки is_check или None).
+    :param is_test: тестовая проверка — результат не пишется в product_ff, детали в check_result.
+    :return: (успех, вывод скрипта или сообщение об ошибке, check_result или None).
     """
     # Приоритет источника правды — script в БД (если заполнен).
     path = _sync_script_from_db(code)
@@ -290,7 +297,7 @@ def run_script(
 
     try:
         ok, out, done, check_from_execute = _run_script_module(
-            path, code, app_mnemonic, env, data
+            path, code, app_mnemonic, env, data, is_test=is_test
         )
         if done:
             if not ok:
@@ -308,6 +315,16 @@ def run_script(
         out = (result.stdout or "").strip() or (result.stderr or "").strip()
         if result.returncode != 0:
             return False, out or f"Код возврата: {result.returncode}", None
+        if is_test:
+            return (
+                False,
+                out
+                or (
+                    "Тестовая проверка: скрипт должен реализовать execute() и возвращать результат, "
+                    "без записи в product_ff."
+                ),
+                None,
+            )
         check_result = get_latest_check_result(app_mnemonic, code)
         if check_result is None:
             return (
@@ -319,7 +336,7 @@ def run_script(
                 ),
                 None,
             )
-        return True, out or "OK", check_result
+        return True, out or "OK", build_check_result(check_result)
     except subprocess.TimeoutExpired:
         return False, "Таймаут выполнения скрипта.", None
     except Exception as e:
@@ -332,7 +349,9 @@ def _run_script_module(
     app_mnemonic: str,
     env: dict,
     data: Optional[dict[str, Any]] = None,
-) -> Tuple[bool, str, bool, Optional[bool]]:
+    *,
+    is_test: bool = False,
+) -> Tuple[bool, str, bool, CheckResultPayload]:
     """
     Пытается выполнить скрипт как модуль через функцию execute(app_code).
     Возвращает:
@@ -340,7 +359,7 @@ def _run_script_module(
       - output: stdout/stderr функции
       - done: True, если запуск через execute был выполнен;
               False, если execute отсутствует и нужен fallback на subprocess.
-      - is_check: результат проверки после сохранения через API, либо None если execute не вызывался.
+      - check_result: объект с is_check/details или None если execute не вызывался.
     """
     spec = importlib.util.spec_from_file_location(f"ff_script_{code}", str(path))
     if spec is None or spec.loader is None:
@@ -369,13 +388,18 @@ def _run_script_module(
             else:
                 raw = execute(app_mnemonic)
         result = coerce_execute_result(raw, app_mnemonic, code)
-        persist_execute_result(
-            product_code=app_mnemonic.strip(),
-            ff_code=code.strip(),
-            is_check=result["is_check"],
-            details=result["details"],
+        check_payload = build_check_result_from_details_list(
+            result["is_check"],
+            result["details"],
         )
-        return True, capture.getvalue().strip(), True, result["is_check"]
+        if not is_test:
+            persist_execute_result(
+                product_code=app_mnemonic.strip(),
+                ff_code=code.strip(),
+                is_check=result["is_check"],
+                details=result["details"],
+            )
+        return True, capture.getvalue().strip(), True, check_payload
     except Exception as e:
         output = capture.getvalue().strip()
         msg = f"{output}\n{e}".strip() if output else str(e)

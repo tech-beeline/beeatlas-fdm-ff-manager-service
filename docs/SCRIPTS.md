@@ -196,6 +196,7 @@ def execute(app_code: str, data: dict[str, Any]) -> ExecuteResult:
 
 - **`run-all`** запускает только скрипты из каталога, для которых в БД **не** выставлен флаг `test`, с учётом `applicability` и порядка (сначала без предусловий).
 - Проверки с **`test = true`** и **`auxiliary_check = true`** не попадают в выдачу «основных» результатов продукта в API, но логика отличается: вспомогательные **участвуют** в `run-all`, тестовые — **нет**.
+- Новая проверка через **POST /fitness-function** всегда создаётся с **`test = true`**. Прогон **`POST /run/{code}`** в этом режиме **не проверяет applicability** и **не пишет** в `product_ff`; детали — в поле **`check_result`** ответа. После отладки — **PUT /fitness-function/{code}** с **`test=false`**.
 
 Уточняйте флаги при создании проверки через `POST /fitness-function` (`multipart/form-data`; повтор того же кода — 409).
 
