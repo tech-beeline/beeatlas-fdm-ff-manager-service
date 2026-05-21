@@ -1,8 +1,16 @@
 """Формирование check_result для ответов POST /api/v1/run/{code}."""
 import json
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
-from scripts._common import detail_row_passes
+
+def detail_row_passes(row: Mapping[str, Any]) -> bool:
+    """Элемент details успешен, если check истинен (bool True или строка \"true\" и т.п.)."""
+    v = row.get("check")
+    if v is True:
+        return True
+    if isinstance(v, str) and v.strip().lower() in ("true", "1", "yes"):
+        return True
+    return False
 
 
 def build_check_result(
