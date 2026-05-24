@@ -14,6 +14,7 @@ from db import (
     json_details_value_to_db_str,
     process_ff_webhook,
 )
+from ff_status import FF_STATUS_TEST, skips_product_ff_persistence
 from run_result import build_check_result, build_check_result_pending
 from script_runner import run_script
 
@@ -114,10 +115,11 @@ def run_ff_check(
     doc_id: при передаче в run добавляется query-параметр docId к URL method.
     Иначе — запуск скрипта .py как раньше.
     Возвращает (успех, сообщение, check_result: объект с is_check/details или None для асинхронной внешней проверки).
-    Для test=true результат в product_ff не сохраняется; детали отдаются в check_result.
+    Для status=TEST результат в product_ff не сохраняется; детали отдаются в check_result.
     """
     row = get_fitness_function_by_code(code.strip())
-    is_test = bool(row and row.get("test") is True)
+    ff_status = (row.get("status") or FF_STATUS_TEST).strip().upper() if row else FF_STATUS_TEST
+    is_test_mode = skips_product_ff_persistence(ff_status)
     if row:
         method = (row.get("method") or "").strip()
         if method:
@@ -128,7 +130,7 @@ def run_ff_check(
                 app_mnemonic,
                 synchronous=synchronous,
                 doc_id=doc_id,
-                is_test=is_test,
+                is_test_mode=is_test_mode,
             )
 
     return run_script(
@@ -136,7 +138,7 @@ def run_ff_check(
         app_mnemonic,
         structurizr_credentials=structurizr_credentials,
         data=data,
-        is_test=is_test,
+        is_test_mode=is_test_mode,
     )
 
 
@@ -147,7 +149,7 @@ def _invoke_external_post(
     *,
     synchronous: bool,
     doc_id: Optional[str],
-    is_test: bool,
+    is_test_mode: bool,
 ) -> Tuple[bool, str, CheckResultPayload]:
     call_id = str(uuid.uuid4())
     product_code = app_mnemonic.strip()
@@ -165,7 +167,7 @@ def _invoke_external_post(
             return False, f"Внешний сервис вернул HTTP {status}" + (f": {detail}" if detail else ""), None
 
         if not synchronous:
-            if is_test:
+            if is_test_mode:
                 return (
                     True,
                     (
@@ -200,7 +202,7 @@ def _invoke_external_post(
             return False, "Внутренняя ошибка: запись outside_ff не найдена после вызова", None
 
         msg = f"Синхронная внешняя проверка выполнена (callId={call_id})."
-        if is_test or outcome == "test_ok":
+        if is_test_mode or outcome == "test_ok":
             details_parsed = None
             if json_details:
                 try:
@@ -209,7 +211,7 @@ def _invoke_external_post(
                     details_parsed = json_details
             return (
                 True,
-                msg + (" Результат не сохранён (тестовая проверка)." if is_test else ""),
+                msg + (" Результат не сохранён (статус TEST)." if is_test_mode else ""),
                 build_check_result(
                     is_check,
                     details=details_parsed,

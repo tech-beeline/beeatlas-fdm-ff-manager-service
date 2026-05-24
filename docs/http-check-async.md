@@ -74,11 +74,11 @@
 ## Запуск проверки
 
 - **`POST /api/v1/run/{code}`** — тело: `{"app": "<мнемоника>"}`; опционально query **`docId`**
-- **`POST /api/v1/run-all`** — то же; проверки с **`test = true`** в run-all не входят
+- **`POST /api/v1/run-all`** — то же; проверки со статусом **TEST** в run-all не входят
 
-Перед запуском учитывается **`applicability`** (предусловия по другим проверкам в **`product_ff`**), кроме проверок с **`test = true`** — для них applicability не проверяется, результат в **`product_ff`** не сохраняется.
+Перед запуском учитывается **`applicability`**, кроме статуса **TEST** (результат в **`product_ff`** не сохраняется). **TRIAL** и **ADOPT** ведут себя одинаково.
 
-### Тестовая асинхронная проверка (`test = true`, `method_synchronous = false`)
+### Тестовая асинхронная проверка (`status = TEST`, `method_synchronous = false`)
 
 1. **`POST /api/v1/run/{code}`** — в **`check_result`**: `{ "pending": true, "callId": "<uuid>" }`.
 2. Ваш сервис отвечает **2xx**, затем вызывает **`POST /api/v1/ff/webhook`** с тем же **`callId`**.

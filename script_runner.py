@@ -22,6 +22,7 @@ from db import (
     get_fitness_function_by_code,
     get_latest_check_result,
 )
+from ff_status import FF_STATUS_ADOPT
 
 # Если целевой каталог (например смонтированный volume) только для чтения — сканируем /scripts-src из образа.
 _scripts_dir_override: Optional[Path] = None
@@ -195,7 +196,7 @@ def materialize_missing_fitness_functions_from_scripts() -> None:
             description=f"Автодобавленная проверка из scripts/{code}.py",
             applicability=None,
             auxiliary_check=False,
-            test=False,
+            status=FF_STATUS_ADOPT,
             create_only=True,
         )
 
@@ -266,13 +267,13 @@ def run_script(
     structurizr_credentials: Optional[Tuple[str, str]] = None,
     data: Optional[dict[str, Any]] = None,
     *,
-    is_test: bool = False,
+    is_test_mode: bool = False,
 ) -> Tuple[bool, str, CheckResultPayload]:
     """
     Запуск одного скрипта проверки для приложения.
     :param code: Код проверки (имя скрипта без .py), например SEQ01 или DEMOFF-1.
     :param app_mnemonic: Мнемоника приложения (строка).
-    :param is_test: тестовая проверка — результат не пишется в product_ff, детали в check_result.
+    :param is_test_mode: статус TEST — результат не пишется в product_ff, детали в check_result.
     :return: (успех, вывод скрипта или сообщение об ошибке, check_result или None).
     """
     # Приоритет источника правды — script в БД (если заполнен).
@@ -297,7 +298,7 @@ def run_script(
 
     try:
         ok, out, done, check_from_execute = _run_script_module(
-            path, code, app_mnemonic, env, data, is_test=is_test
+            path, code, app_mnemonic, env, data, is_test_mode=is_test_mode
         )
         if done:
             if not ok:
@@ -315,7 +316,7 @@ def run_script(
         out = (result.stdout or "").strip() or (result.stderr or "").strip()
         if result.returncode != 0:
             return False, out or f"Код возврата: {result.returncode}", None
-        if is_test:
+        if is_test_mode:
             return (
                 False,
                 out
@@ -350,7 +351,7 @@ def _run_script_module(
     env: dict,
     data: Optional[dict[str, Any]] = None,
     *,
-    is_test: bool = False,
+    is_test_mode: bool = False,
 ) -> Tuple[bool, str, bool, CheckResultPayload]:
     """
     Пытается выполнить скрипт как модуль через функцию execute(app_code).
@@ -392,7 +393,7 @@ def _run_script_module(
             result["is_check"],
             result["details"],
         )
-        if not is_test:
+        if not is_test_mode:
             persist_execute_result(
                 product_code=app_mnemonic.strip(),
                 ff_code=code.strip(),

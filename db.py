@@ -7,8 +7,25 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 
 from config import settings
+from ff_status import (
+    FF_STATUS_ADOPT,
+    FF_STATUS_TEST,
+    FF_STATUS_TRIAL,
+    excluded_from_run_all,
+    normalize_ff_status,
+    should_clear_ff_run_data,
+    skips_product_ff_persistence,
+)
 
 SCHEMA = "ff"
+
+
+def _row_ff_status(row: dict) -> str:
+    """Статус из строки БД (колонка status)."""
+    raw = row.get("status")
+    if raw is not None and str(raw).strip():
+        return normalize_ff_status(str(raw))
+    return FF_STATUS_TEST
 
 
 def get_connection():
@@ -65,23 +82,25 @@ def get_fitness_function_code_to_id() -> dict[str, int]:
     return {r["code"]: r["id"] for r in rows}
 
 
-def fitness_function_is_test(*, ff_id: Optional[int] = None, ff_code: Optional[str] = None) -> bool:
-    """True, если проверка помечена test (результаты не пишутся в product_ff)."""
+def get_fitness_function_status(*, ff_id: Optional[int] = None, ff_code: Optional[str] = None) -> Optional[str]:
+    """Статус проверки (TEST / TRIAL / ADOPT) или None, если не найдена."""
     if ff_id is None and ff_code is None:
-        return False
+        return None
     with get_cursor() as cur:
         if ff_id is not None:
             cur.execute(
-                f"SELECT test FROM {SCHEMA}.fitness_function WHERE id = %s",
+                f"SELECT status FROM {SCHEMA}.fitness_function WHERE id = %s",
                 (ff_id,),
             )
         else:
             cur.execute(
-                f"SELECT test FROM {SCHEMA}.fitness_function WHERE code = %s",
+                f"SELECT status FROM {SCHEMA}.fitness_function WHERE code = %s",
                 (ff_code.strip(),),
             )
         row = cur.fetchone()
-    return bool(row and row.get("test") is True)
+    if row is None:
+        return None
+    return _row_ff_status(dict(row))
 
 
 def save_product_ff_result(
@@ -95,19 +114,19 @@ def save_product_ff_result(
     """
     Добавляет актуальную запись product_ff для продукта (внешний код) и проверки (ff code).
     Предыдущие актуальные записи для этой пары помечаются is_actual = false.
-    Возвращает ("ok", id), ("fitness_function_not_found", None) или ("test_mode", None) для test=true.
+    Возвращает ("ok", id), ("fitness_function_not_found", None) или ("test_mode", None) для status=TEST.
     """
     code_key = product_code.strip()
     code = ff_code.strip()
     with get_cursor() as cur:
         cur.execute(
-            f"SELECT id, test FROM {SCHEMA}.fitness_function WHERE code = %s",
+            f"SELECT id, status FROM {SCHEMA}.fitness_function WHERE code = %s",
             (code,),
         )
         row = cur.fetchone()
         if not row:
             return ("fitness_function_not_found", None)
-        if row.get("test") is True:
+        if skips_product_ff_persistence(_row_ff_status(dict(row))):
             return ("test_mode", None)
         ff_id = row["id"]
 
@@ -140,12 +159,52 @@ def save_product_ff_result(
         return ("ok", new_row["id"])
 
 
+def set_fitness_function_status(code: str, new_status: str) -> Optional[dict]:
+    """
+    Устанавливает статус TEST / TRIAL / ADOPT.
+    При смене с/на TEST очищает product_ff и outside_ff для проверки.
+    """
+    key = code.strip()
+    status_norm = normalize_ff_status(new_status)
+    with get_cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, status FROM {SCHEMA}.fitness_function
+            WHERE code = %s
+            """,
+            (key,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        ff_id = row["id"]
+        old_status = _row_ff_status(dict(row))
+        if should_clear_ff_run_data(old_status, status_norm):
+            cur.execute(
+                f"DELETE FROM {SCHEMA}.product_ff WHERE ff_id = %s",
+                (ff_id,),
+            )
+            cur.execute(
+                f"DELETE FROM {SCHEMA}.outside_ff WHERE ff_id = %s",
+                (ff_id,),
+            )
+        cur.execute(
+            f"""
+            UPDATE {SCHEMA}.fitness_function
+            SET status = %s
+            WHERE id = %s
+            """,
+            (status_norm, ff_id),
+        )
+    return get_fitness_function_by_code(key)
+
+
 def get_fitness_function_by_code(code: str) -> Optional[dict]:
     """Одна строка fitness_function по code или None."""
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, code, description, applicability, auxiliary_check, test, script, method,
+            SELECT id, code, description, applicability, auxiliary_check, status, script, method,
                    method_synchronous
             FROM {SCHEMA}.fitness_function
             WHERE code = %s
@@ -219,13 +278,14 @@ def process_ff_webhook(
         pc = row["product_code"]
 
         cur.execute(
-            f"SELECT test FROM {SCHEMA}.fitness_function WHERE id = %s",
+            f"SELECT status FROM {SCHEMA}.fitness_function WHERE id = %s",
             (ff_id,),
         )
         ff_row = cur.fetchone()
-        is_test = bool(ff_row and ff_row.get("test") is True)
+        ff_status = _row_ff_status(dict(ff_row)) if ff_row else FF_STATUS_ADOPT
+        is_test_mode = skips_product_ff_persistence(ff_status)
 
-        if not is_test:
+        if not is_test_mode:
             cur.execute(
                 f"""
                 UPDATE {SCHEMA}.product_ff
@@ -250,7 +310,7 @@ def process_ff_webhook(
                 """,
                 (pc, ff_id, is_check, json_details, count_detail, success_detail),
             )
-        if is_test:
+        if is_test_mode:
             cur.execute(
                 f"""
                 UPDATE {SCHEMA}.outside_ff
@@ -272,18 +332,18 @@ def process_ff_webhook(
                 """,
                 (row["id"],),
             )
-        return "test_ok" if is_test else "ok"
+        return "test_ok" if is_test_mode else "ok"
 
 
 def get_outside_ff_call(call_id: str) -> Optional[dict]:
-    """Запись outside_ff с кодом проверки и флагом test (для опроса асинхронного тестового вызова)."""
+    """Запись outside_ff с кодом проверки и статусом ФФ (для опроса асинхронного тестового вызова)."""
     cid = call_id.strip()
     with get_cursor() as cur:
         cur.execute(
             f"""
             SELECT o.id, o.ff_id, o.product_code, o.call_id, o.status,
                    o.is_check, o.json_details, o.count_detail, o.success_detail,
-                   ff.code AS ff_code, ff.test
+                   ff.code AS ff_code, ff.status AS ff_status
             FROM {SCHEMA}.outside_ff o
             JOIN {SCHEMA}.fitness_function ff ON ff.id = o.ff_id
             WHERE o.call_id = %s
@@ -331,7 +391,7 @@ def add_fitness_function(
     description: str,
     applicability: Optional[str],
     auxiliary_check: bool = False,
-    test: bool = False,
+    status: str = FF_STATUS_TEST,
     script: Optional[str] = None,
     set_script: bool = False,
     method: Optional[str] = None,
@@ -344,16 +404,10 @@ def add_fitness_function(
     Добавляет новую фитнес-функцию (если такой code ещё нет) и возвращает её id.
     Если запись с таким code уже существует — при create_only=False обновляет поля и возвращает id;
     при create_only=True не меняет строку и возвращает None.
-    script: текст скрипта (.py) для хранения в БД.
-    set_script: если True — записать/обновить колонку script; если False — при UPDATE колонку script не менять.
-    method: URL внешнего POST; непустой method означает внешнюю проверку (вызов вместо скрипта).
-    set_method: если True — записать/очистить колонку method (пустая строка -> NULL).
-    method_synchronous: при непустом method — true = ответ HTTP записывается сразу (как webhook), false = колбэк POST /api/v1/ff/webhook.
-    set_method_synchronous: если True — обновить колонку method_synchronous.
-    auxiliary_check: вспомогательная проверка (не в основных результатах продукта, но в run-all).
-    test: тестовая проверка (не в run-all и не в actual-results продукта).
-    При обновлении: если test меняется с true на false — удаляются product_ff и outside_ff для этой функции.
+    status: TEST | TRIAL | ADOPT.
+    При смене статуса с/на TEST удаляются product_ff и outside_ff для этой функции.
     """
+    status_norm = normalize_ff_status(status)
     method_value: Optional[str] = None
     if set_method:
         method_value = method.strip() if method and str(method).strip() else None
@@ -361,7 +415,7 @@ def add_fitness_function(
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, test FROM {SCHEMA}.fitness_function
+            SELECT id, status FROM {SCHEMA}.fitness_function
             WHERE code = %s
             """,
             (code,),
@@ -371,8 +425,8 @@ def add_fitness_function(
             if create_only:
                 return None
             ff_id = row["id"]
-            old_test = row.get("test")
-            if old_test is True and test is False:
+            old_status = _row_ff_status(dict(row))
+            if should_clear_ff_run_data(old_status, status_norm):
                 cur.execute(
                     f"DELETE FROM {SCHEMA}.product_ff WHERE ff_id = %s",
                     (ff_id,),
@@ -385,9 +439,9 @@ def add_fitness_function(
                 "description = %s",
                 "applicability = %s",
                 "auxiliary_check = %s",
-                "test = %s",
+                "status = %s",
             ]
-            params: list = [description, applicability, auxiliary_check, test]
+            params: list = [description, applicability, auxiliary_check, status_norm]
             if set_script:
                 sets.append("script = %s")
                 params.append(script)
@@ -412,7 +466,7 @@ def add_fitness_function(
         cur.execute(
             f"""
             INSERT INTO {SCHEMA}.fitness_function
-                (code, description, applicability, auxiliary_check, test, script, method,
+                (code, description, applicability, auxiliary_check, status, script, method,
                  method_synchronous)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
@@ -422,7 +476,7 @@ def add_fitness_function(
                 description,
                 applicability,
                 auxiliary_check,
-                test,
+                status_norm,
                 script if set_script else None,
                 method_value if set_method else None,
                 ms_val,
@@ -437,7 +491,7 @@ def get_all_fitness_functions() -> list[dict]:
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, code, description, applicability, auxiliary_check, test, script, method,
+            SELECT id, code, description, applicability, auxiliary_check, status, script, method,
                    method_synchronous
             FROM {SCHEMA}.fitness_function
             ORDER BY id
@@ -447,23 +501,26 @@ def get_all_fitness_functions() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_fitness_function_codes_with_test_true() -> set[str]:
-    """Коды проверок с test = true (исключаются из run-all и из actual-results продукта)."""
+def get_fitness_function_codes_excluded_from_run_all() -> set[str]:
+    """Коды проверок со статусом TEST (не входят в run-all)."""
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT code FROM {SCHEMA}.fitness_function
-            WHERE test IS TRUE
+            SELECT code, status FROM {SCHEMA}.fitness_function
             """
         )
         rows = cur.fetchall()
-    return {r["code"] for r in rows}
+    return {
+        r["code"]
+        for r in rows
+        if r.get("code") and excluded_from_run_all(_row_ff_status(dict(r)))
+    }
 
 
 def get_actual_results_by_product_code(product_code: str) -> list[dict]:
     """
     По коду продукта (внешняя мнемоника) возвращает актуальные записи product_ff для основных проверок:
-    не включаются fitness_function с auxiliary_check = true или test = true.
+    не включаются fitness_function с auxiliary_check = true или status = TEST.
     Поля: id, product_code, ff_id, ff_code, ff_description, is_check, create_date,
     json_details, count_detail, success_detail.
     Если записей нет — пустой список.
@@ -488,10 +545,10 @@ def get_actual_results_by_product_code(product_code: str) -> list[dict]:
             JOIN {SCHEMA}.fitness_function ff ON ff.id = pf.ff_id
             WHERE LOWER(pf.product_code) = LOWER(%s) AND pf.is_actual = true
               AND (ff.auxiliary_check IS NOT TRUE)
-              AND (ff.test IS NOT TRUE)
+              AND (ff.status IN (%s, %s))
             ORDER BY pf.create_date
             """,
-            (code,),
+            (code, FF_STATUS_TRIAL, FF_STATUS_ADOPT),
         )
         rows = cur.fetchall()
     return [dict(r) for r in rows]
@@ -626,6 +683,59 @@ def init_schema():
             CREATE TABLE IF NOT EXISTS {SCHEMA}.schema_meta (
                 key TEXT PRIMARY KEY
             );
+            """
+        )
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.fitness_function
+            ADD COLUMN IF NOT EXISTS status TEXT;
+        """)
+        cur.execute(
+            f"""
+            WITH ins AS (
+                INSERT INTO {SCHEMA}.schema_meta (key)
+                SELECT 'fitness_function_status_from_test'
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {SCHEMA}.schema_meta
+                    WHERE key = 'fitness_function_status_from_test'
+                )
+                RETURNING 1
+            )
+            UPDATE {SCHEMA}.fitness_function ff
+            SET status = CASE WHEN ff.test IS TRUE THEN 'TEST' ELSE 'ADOPT' END
+            WHERE ff.status IS NULL
+              AND EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = '{SCHEMA}'
+                  AND table_name = 'fitness_function'
+                  AND column_name = 'test'
+              )
+              AND EXISTS (SELECT 1 FROM ins);
+            """
+        )
+        cur.execute(
+            f"""
+            UPDATE {SCHEMA}.fitness_function
+            SET status = 'TEST'
+            WHERE status IS NULL;
+            """
+        )
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.fitness_function
+            ALTER COLUMN status SET DEFAULT 'TEST';
+        """)
+        cur.execute(
+            f"""
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM {SCHEMA}.schema_meta
+                WHERE key = 'fitness_function_drop_test_column'
+              ) THEN
+                ALTER TABLE {SCHEMA}.fitness_function DROP COLUMN IF EXISTS test;
+                INSERT INTO {SCHEMA}.schema_meta (key)
+                VALUES ('fitness_function_drop_test_column');
+              END IF;
+            END $$;
             """
         )
         # Одноразово: для уже существовавших проверок с непустым method признак синхронности = false (асинхронный webhook).

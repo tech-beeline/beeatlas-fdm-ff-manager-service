@@ -51,8 +51,9 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | GET | `/api/v1/` | Краткая информация о сервисе и ссылка на документацию |
 | GET | `/api/v1/scripts` | Коды всех скриптов проверок (файлы `*.py` в каталоге, кроме `_*.py` и `__init__.py`) |
 | GET | `/api/v1/fitness-functions` | Список записей `fitness_function` из БД |
-| POST | `/api/v1/fitness-function` | Создание проверки (`multipart/form-data`; всегда `test=true`; при занятом коде — 409) |
-| PUT | `/api/v1/fitness-function/{code}` | Обновление проверки, в т.ч. снятие флага `test` для боевого режима |
+| POST | `/api/v1/fitness-function` | Создание проверки (`multipart`; статус **TEST**; при занятом коде — 409) |
+| PUT | `/api/v1/fitness-function/{code}` | Обновление проверки (снова **TEST**) |
+| POST | `/api/v1/fitness-function/{code}/status` | Смена статуса: **TEST**, **TRIAL**, **ADOPT** |
 | GET | `/api/v1/ff/call/{callId}` | Статус/результат асинхронного вызова (для тестовых — детали без `product_ff`) |
 | POST | `/api/v1/run/{code}` | Запуск одной проверки для приложения; тело JSON: `{"app": "<мнемоника>"}`; query `docId` (опц.) |
 | POST | `/api/v1/run-all` | Запуск всех подходящих проверок; тело: `{"app": "<мнемоника>"}`; query `docId` (опц.) |
@@ -60,7 +61,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | POST | `/api/v1/product/{code}/ff` | Запись результата проверки в `product_ff` (используется скриптами через `run_check` в `_common.py`) |
 | GET | `/api/v1/product/{code}/actual-results` | Актуальные результаты основных проверок по продукту (без вспомогательных и тестовых) |
 
-Запуск одной проверки: либо исполняется скрипт `{code}.py`, либо выполняется POST на URL из поля `method` в `fitness_function`. Проверки с `test = true` не входят в `run-all`.
+Запуск одной проверки: либо исполняется скрипт `{code}.py`, либо выполняется POST на URL из поля `method` в `fitness_function`. Проверки со статусом **TEST** не входят в `run-all`.
 
 ### Ошибки клиента (4xx)
 
@@ -82,7 +83,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 Схема **`ff`**, таблицы:
 
-- **`ff.fitness_function`** — проверки: `code`, `description`, `applicability`, `auxiliary_check`, `test`, `script`, `method` (URL внешнего POST).
+- **`ff.fitness_function`** — проверки: `code`, `description`, `applicability`, `auxiliary_check`, `status` (TEST / TRIAL / ADOPT), `script`, `method` (URL внешнего POST).
 - **`ff.outside_ff`** — контекст асинхронных внешних вызовов (`call_id`, `product_code`, статус).
 - **`ff.product_ff`** — результаты: `product_code`, `ff_id`, `is_check`, `is_actual`, `json_details`, `count_detail`, `success_detail`, `create_date`.
 

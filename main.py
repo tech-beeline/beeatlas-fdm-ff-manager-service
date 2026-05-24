@@ -25,16 +25,18 @@ from db import (
     get_all_fitness_functions,
     get_fitness_function_applicabilities,
     get_fitness_function_code_to_id,
-    get_fitness_function_codes_with_test_true,
+    get_fitness_function_codes_excluded_from_run_all,
     json_details_value_to_db_str,
     process_ff_webhook,
     product_has_actual_ff_pass,
     add_fitness_function,
     get_fitness_function_by_code,
     get_outside_ff_call,
+    set_fitness_function_status,
     save_product_ff_result,
 )
 from ff_runner import run_ff_check
+from ff_status import FF_STATUS_TEST, normalize_ff_status, skips_applicability_check
 from run_result import check_result_from_outside_ff_row
 from config import settings
 from structurizr_hmac import CredentialsFetchError, fetch_structurizr_credentials
@@ -163,7 +165,7 @@ class FitnessFunctionItem(BaseModel):
     description: Optional[str] = None
     applicability: Optional[str] = None
     auxiliary_check: bool = Field(..., description="Вспомогательная проверка")
-    test: bool = Field(..., description="Тестовая проверка")
+    status: str = Field(..., description="Статус: TEST, TRIAL, ADOPT")
     script: Optional[str] = Field(None, description="Текст скрипта (.py) в БД")
     method: Optional[str] = Field(None, description="URL внешнего POST для внешней проверки")
     method_synchronous: bool = Field(
@@ -381,7 +383,7 @@ async def _perform_fitness_function_upsert(
     description: str,
     applicability: Optional[str],
     aux: bool,
-    is_test: bool,
+    ff_status: str,
     method: Optional[str],
     set_method: bool,
     method_synchronous: bool,
@@ -429,7 +431,7 @@ async def _perform_fitness_function_upsert(
         description,
         applicability,
         aux,
-        is_test,
+        ff_status,
         script=script_text,
         set_script=set_script,
         method=method,
@@ -467,7 +469,7 @@ async def _perform_fitness_function_upsert(
         "description": description,
         "applicability": applicability,
         "auxiliary_check": aux,
-        "test": is_test,
+        "status": ff_status,
         "script_stored": set_script,
         "script_attached": attached,
         "method": method_stored,
@@ -485,7 +487,6 @@ async def create_fitness_function(
     description: str = Form(..., description="Описание"),
     applicability: Optional[str] = Form(None),
     auxiliary_check: Optional[str] = Form(None),
-    test: Optional[str] = Form(None),
     script: Optional[str] = Form(None),
     script_file: UploadFile = File(None),
     method: Optional[str] = Form(
@@ -499,12 +500,11 @@ async def create_fitness_function(
 ):
     """
     **multipart/form-data** — только создание новой проверки. Если код уже есть — **409 Conflict**.
-    Новая проверка всегда создаётся с **test = true** (тестовый режим); поле `test` в форме игнорируется.
-    После отладки снимите флаг через **PUT /api/v1/fitness-function/{code}**.
+    Новая проверка всегда создаётся со статусом **TEST**.
+    Смена статуса — **POST /api/v1/fitness-function/{code}/status** (TRIAL, ADOPT).
     Поля `script` и/или файл `script_file`; колонка **method** задаётся из поля `method` (пусто → NULL).
     """
     aux = _form_bool_optional(auxiliary_check)
-    is_test = True
     msync = _form_bool_optional(method_synchronous)
     method_for_db = None
     if method is not None:
@@ -521,7 +521,7 @@ async def create_fitness_function(
         description=description,
         applicability=applicability_s,
         aux=aux,
-        is_test=is_test,
+        ff_status=FF_STATUS_TEST,
         method=method_for_db,
         set_method=True,
         method_synchronous=msync,
@@ -548,10 +548,6 @@ async def update_fitness_function(
     description: str = Form(..., description="Описание"),
     applicability: Optional[str] = Form(None),
     auxiliary_check: Optional[str] = Form(None),
-    test: Optional[str] = Form(
-        None,
-        description="Тестовая проверка: false — перевести в боевой режим (результаты сохраняются в product_ff)",
-    ),
     script: Optional[str] = Form(None),
     script_file: UploadFile = File(None),
     method: Optional[str] = Form(
@@ -565,20 +561,15 @@ async def update_fitness_function(
 ):
     """
     **multipart/form-data** — обновление существующей проверки. Если код не найден — **404**.
-    При смене **test** с true на false удаляются накопленные результаты product_ff и outside_ff для этой проверки.
+    После обновления статус снова **TEST**. Смена на TRIAL/ADOPT — **POST .../status**.
     """
-    existing_row = get_fitness_function_by_code(code.strip())
-    if not existing_row:
+    if not get_fitness_function_by_code(code.strip()):
         raise HTTPException(
             status_code=404,
             detail=f"Проверка с кодом '{code.strip()}' не найдена",
         )
 
     aux = _form_bool_optional(auxiliary_check)
-    if test is None:
-        is_test = bool(existing_row.get("test"))
-    else:
-        is_test = _form_bool_optional(test)
     msync = _form_bool_optional(method_synchronous)
     method_for_db = None
     if method is not None:
@@ -596,7 +587,7 @@ async def update_fitness_function(
         description=description,
         applicability=applicability_s,
         aux=aux,
-        is_test=is_test,
+        ff_status=FF_STATUS_TEST,
         method=method_for_db,
         set_method=True,
         method_synchronous=msync,
@@ -611,6 +602,57 @@ async def update_fitness_function(
             detail=f"Проверка с кодом '{c}' не найдена",
         )
     return result
+
+
+def _fitness_function_response_from_row(row: dict) -> dict:
+    method_stored = None
+    m = (row.get("method") or "").strip()
+    if m:
+        method_stored = m
+    return {
+        "id": row["id"],
+        "code": row.get("code"),
+        "description": row.get("description"),
+        "applicability": row.get("applicability"),
+        "auxiliary_check": bool(row.get("auxiliary_check")),
+        "status": (row.get("status") or FF_STATUS_TEST).strip().upper(),
+        "method": method_stored,
+        "method_synchronous": bool(row.get("method_synchronous")),
+    }
+
+
+@app.post(
+    "/api/v1/fitness-function/{code}/status",
+    summary="Установить статус проверки",
+    responses=_openapi_client_errors(404, 405, 422),
+)
+def change_fitness_function_status(
+    code: str,
+    status: str = Form(
+        ...,
+        description="Статус: TEST, TRIAL или ADOPT",
+    ),
+):
+    """
+  Устанавливает статус жизненного цикла проверки:
+
+    - **TEST** — отладка: без **product_ff**, без **applicability**, не в **run-all** и **actual-results**;
+    - **TRIAL** и **ADOPT** — маркеры этапа жизненного цикла, **поведение одинаковое** (боевой режим).
+
+    При переходе с/на **TEST** удаляются **product_ff** и **outside_ff** для этой проверки.
+    Создание и **PUT** всегда выставляют **TEST**; этот метод задаёт **TRIAL** или **ADOPT**.
+    """
+    c = code.strip()
+    if not get_fitness_function_by_code(c):
+        raise HTTPException(status_code=404, detail=f"Проверка с кодом '{c}' не найдена")
+    try:
+        status_norm = normalize_ff_status(status)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    row = set_fitness_function_status(c, status_norm)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Проверка с кодом '{c}' не найдена")
+    return _fitness_function_response_from_row(row)
 
 
 def _applicability_empty(applicability) -> bool:
@@ -648,12 +690,12 @@ def _runnable_ff_codes_ordered() -> list[str]:
     rows = get_all_fitness_functions()
     disk = list_scripts()
     disk_set = set(disk)
-    test_codes = get_fitness_function_codes_with_test_true()
+    excluded_run_all = get_fitness_function_codes_excluded_from_run_all()
     chosen: list[str] = []
     seen: set[str] = set()
     for r in sorted(rows, key=lambda x: x["id"]):
         c = r.get("code")
-        if not c or c in test_codes:
+        if not c or c in excluded_run_all:
             continue
         m = (r.get("method") or "").strip()
         if m:
@@ -663,7 +705,7 @@ def _runnable_ff_codes_ordered() -> list[str]:
             chosen.append(c)
             seen.add(c)
     for c in disk:
-        if c in test_codes or c in seen:
+        if c in excluded_run_all or c in seen:
             continue
         chosen.append(c)
         seen.add(c)
@@ -685,8 +727,8 @@ def run_one(
     """
     Запуск проверки для продукта: скрипт .py или POST на URL из fitness_function.method.
     В теле запроса передаётся мнемоника приложения (поле app).
-    Для проверок с **test = false** перед запуском проверяется applicability.
-    Для **test = true** applicability не проверяется; результат не сохраняется в product_ff,
+    Для статуса **TEST** applicability не проверяется; результат не сохраняется в product_ff.
+    Для **TRIAL** и **ADOPT** проверяется applicability.
     детали расчёта возвращаются в **check_result** (is_check, details, countDetail, successDetail).
     Для тестовой асинхронной HTTP-проверки в check_result — `{ "pending": true, "callId": "..." }`;
     после webhook опросите **GET /api/v1/ff/call/{callId}**. Боевая асинхронная проверка — check_result null до webhook (результат в product_ff).
@@ -696,9 +738,9 @@ def run_one(
         raise HTTPException(status_code=400, detail="Поле app не может быть пустым")
 
     ff_row = get_fitness_function_by_code(code)
-    is_test_ff = bool(ff_row and ff_row.get("test") is True)
+    ff_status_run = (ff_row.get("status") or FF_STATUS_TEST).strip().upper() if ff_row else FF_STATUS_TEST
 
-    if not is_test_ff:
+    if not skips_applicability_check(ff_status_run):
         ff_app_map = get_fitness_function_applicabilities()
         code_to_id = get_fitness_function_code_to_id()
         applicability = ff_app_map.get(code)
@@ -763,7 +805,7 @@ def run_all(
 
     ff_app_map = get_fitness_function_applicabilities()
     code_to_id = get_fitness_function_code_to_id()
-    test_codes = get_fitness_function_codes_with_test_true()
+    excluded_run_all = get_fitness_function_codes_excluded_from_run_all()
     all_codes = _runnable_ff_codes_ordered()
 
     if not all_codes:
@@ -832,8 +874,8 @@ def run_all(
         if c not in ran
     ]
     skipped.extend(
-        {"code": c, "reason": "проверка с флагом test не входит в run-all"}
-        for c in sorted(test_codes)
+        {"code": c, "reason": "проверка со статусом TEST не входит в run-all"}
+        for c in sorted(excluded_run_all)
     )
 
     if not results and skipped:
@@ -841,7 +883,7 @@ def run_all(
             "app": body.app,
             "results": {},
             "skipped": skipped,
-            "message": "Ни одна проверка не запущена: не выполнены предусловия applicability или все помечены как test",
+            "message": "Ни одна проверка не запущена: не выполнены предусловия applicability или все со статусом TEST",
         }
 
     return {
@@ -873,7 +915,7 @@ def get_ff_call_result(call_id: str):
         "callId": row["call_id"],
         "ff_code": row.get("ff_code"),
         "product_code": row.get("product_code"),
-        "test": bool(row.get("test")),
+        "ff_status": (row.get("ff_status") or FF_STATUS_TEST).strip().upper(),
     }
     if row.get("status") != "done":
         return {**base, "status": "pending", "check_result": None}
