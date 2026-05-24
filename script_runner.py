@@ -11,7 +11,11 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-from run_result import build_check_result, build_check_result_from_details_list
+from run_result import (
+    build_check_result,
+    build_check_result_from_details_list,
+    check_result_from_stored_row,
+)
 
 CheckResultPayload = Optional[dict[str, Any]]
 
@@ -20,7 +24,7 @@ from db import (
     add_fitness_function,
     get_all_fitness_functions,
     get_fitness_function_by_code,
-    get_latest_check_result,
+    get_latest_check_result_payload,
 )
 from ff_status import FF_STATUS_ADOPT
 
@@ -326,8 +330,8 @@ def run_script(
                 ),
                 None,
             )
-        check_result = get_latest_check_result(app_mnemonic, code)
-        if check_result is None:
+        stored = get_latest_check_result_payload(app_mnemonic, code)
+        if stored is None:
             return (
                 False,
                 out
@@ -337,7 +341,12 @@ def run_script(
                 ),
                 None,
             )
-        return True, out or "OK", build_check_result(check_result)
+        return True, out or "OK", check_result_from_stored_row(
+            bool(stored["is_check"]),
+            json_details=stored.get("json_details"),
+            count_detail=stored.get("count_detail"),
+            success_detail=stored.get("success_detail"),
+        )
     except subprocess.TimeoutExpired:
         return False, "Таймаут выполнения скрипта.", None
     except Exception as e:

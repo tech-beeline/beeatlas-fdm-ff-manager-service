@@ -16,6 +16,7 @@ from ff_status import (
     should_clear_ff_run_data,
     skips_product_ff_persistence,
 )
+from run_result import resolve_detail_fields_for_storage
 
 SCHEMA = "ff"
 
@@ -65,20 +66,28 @@ def get_latest_check_result(product_code: str, ff_code: str) -> Optional[bool]:
     Возвращает is_check последней актуальной записи product_ff для пары (код продукта, фитнес-функция по code).
     Если записи нет — None.
     """
+    payload = get_latest_check_result_payload(product_code, ff_code)
+    if payload is None:
+        return None
+    return payload.get("is_check")
+
+
+def get_latest_check_result_payload(product_code: str, ff_code: str) -> Optional[dict]:
+    """Последняя актуальная запись product_ff для ответа run (is_check, json_details, счётчики)."""
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT pf.is_check
+            SELECT pf.is_check, pf.json_details, pf.count_detail, pf.success_detail
             FROM {SCHEMA}.product_ff pf
             JOIN {SCHEMA}.fitness_function ff ON ff.id = pf.ff_id
-            WHERE pf.product_code = %s AND ff.code = %s AND pf.is_actual = true
+            WHERE LOWER(pf.product_code) = LOWER(%s) AND ff.code = %s AND pf.is_actual = true
             ORDER BY pf.create_date DESC
             LIMIT 1
             """,
-            (product_code.strip(), ff_code),
+            (product_code.strip(), ff_code.strip()),
         )
         row = cur.fetchone()
-        return row["is_check"] if row is not None else None
+    return dict(row) if row is not None else None
 
 
 def get_fitness_function_code_to_id() -> dict[str, int]:
@@ -136,6 +145,12 @@ def save_product_ff_result(
         if skips_product_ff_persistence(_row_ff_status(dict(row))):
             return ("test_mode", None)
         ff_id = row["id"]
+
+        json_details, count_detail, success_detail = resolve_detail_fields_for_storage(
+            json_details=json_details,
+            count_detail=count_detail,
+            success_detail=success_detail,
+        )
 
         cur.execute(
             f"""
@@ -295,6 +310,12 @@ def process_ff_webhook(
         ff_row = cur.fetchone()
         ff_status = _row_ff_status(dict(ff_row)) if ff_row else FF_STATUS_ADOPT
         is_test_mode = skips_product_ff_persistence(ff_status)
+
+        json_details, count_detail, success_detail = resolve_detail_fields_for_storage(
+            json_details=json_details,
+            count_detail=count_detail,
+            success_detail=success_detail,
+        )
 
         if not is_test_mode:
             cur.execute(

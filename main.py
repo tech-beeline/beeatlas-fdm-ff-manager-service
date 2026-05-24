@@ -754,6 +754,7 @@ def run_one(
     детали расчёта возвращаются в **check_result** (is_check, details, countDetail, successDetail).
     Для тестовой асинхронной HTTP-проверки в check_result — `{ "pending": true, "callId": "..." }`;
     после webhook опросите **GET /api/v1/ff/call/{callId}**. Боевая асинхронная проверка — check_result null до webhook (результат в product_ff).
+    **countDetail** и **successDetail** считаются из массива **details** (длина и число элементов с check=true).
     """
     app_code = body.app.strip()
     if not app_code:
@@ -821,8 +822,9 @@ def run_all(
 ):
     """
     Запуск проверок для приложения: скрипты .py и внешние POST (fitness_function.method).
-    Проверки с fitness_function.test = true не запускаются.
+    Проверки со статусом **TEST** не запускаются.
     Сначала — с applicability = NULL, затем остальные по мере выполнения предусловий в product_ff.
+    В **check_result** каждой проверки — **details**, **countDetail**, **successDetail** (для любого статуса TRIAL/ADOPT).
     """
     app_code = body.app.strip()
     if not app_code:

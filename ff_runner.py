@@ -11,11 +11,15 @@ from db import (
     delete_outside_ff_by_call_id,
     get_fitness_function_by_code,
     insert_outside_ff_call,
-    json_details_value_to_db_str,
     process_ff_webhook,
 )
 from ff_status import FF_STATUS_TEST, skips_product_ff_persistence
-from run_result import build_check_result, build_check_result_pending
+from run_result import (
+    build_check_result,
+    build_check_result_pending,
+    check_result_from_stored_row,
+    resolve_detail_fields_for_storage,
+)
 from script_runner import run_script
 
 CheckResultPayload = Optional[dict[str, Any]]
@@ -75,29 +79,29 @@ def _parse_sync_http_response_json(text: str, expected_call_id: str) -> tuple[bo
     raw_details = data.get("details")
     if raw_details is None and "json_details" in data:
         raw_details = data["json_details"]
-    json_details = json_details_value_to_db_str(raw_details)
-    cd = data.get("countDetail") if "countDetail" in data else data.get("count_detail")
-    sd = data.get("successDetail") if "successDetail" in data else data.get("success_detail")
-    count_detail: Optional[int]
-    success_detail: Optional[int]
-    if cd is None:
-        count_detail = None
-    elif isinstance(cd, int):
-        count_detail = cd
-    else:
+    cd_raw = data.get("countDetail") if "countDetail" in data else data.get("count_detail")
+    sd_raw = data.get("successDetail") if "successDetail" in data else data.get("success_detail")
+    count_detail: Optional[int] = None
+    success_detail: Optional[int] = None
+    if isinstance(cd_raw, int):
+        count_detail = cd_raw
+    elif cd_raw is not None:
         try:
-            count_detail = int(cd)
+            count_detail = int(cd_raw)
         except (TypeError, ValueError):
             count_detail = None
-    if sd is None:
-        success_detail = None
-    elif isinstance(sd, int):
-        success_detail = sd
-    else:
+    if isinstance(sd_raw, int):
+        success_detail = sd_raw
+    elif sd_raw is not None:
         try:
-            success_detail = int(sd)
+            success_detail = int(sd_raw)
         except (TypeError, ValueError):
             success_detail = None
+    json_details, count_detail, success_detail = resolve_detail_fields_for_storage(
+        raw_details=raw_details,
+        count_detail=count_detail,
+        success_detail=success_detail,
+    )
     return is_check, json_details, count_detail, success_detail
 
 
@@ -203,24 +207,15 @@ def _invoke_external_post(
             return False, "Внутренняя ошибка: запись outside_ff не найдена после вызова", None
 
         msg = f"Синхронная внешняя проверка выполнена (callId={call_id})."
-        if is_test_mode or outcome == "test_ok":
-            details_parsed = None
-            if json_details:
-                try:
-                    details_parsed = json.loads(json_details)
-                except (TypeError, json.JSONDecodeError):
-                    details_parsed = json_details
-            return (
-                True,
-                msg + (" Результат не сохранён (статус TEST)." if is_test_mode else ""),
-                build_check_result(
-                    is_check,
-                    details=details_parsed,
-                    count_detail=count_detail,
-                    success_detail=success_detail,
-                ),
-            )
-        return True, msg, build_check_result(is_check)
+        check_payload = check_result_from_stored_row(
+            is_check,
+            json_details=json_details,
+            count_detail=count_detail,
+            success_detail=success_detail,
+        )
+        if is_test_mode:
+            msg += " Результат не сохранён (статус TEST)."
+        return True, msg, check_payload
 
     except (urllib.error.URLError, OSError, ValueError) as e:
         delete_outside_ff_by_call_id(call_id)
