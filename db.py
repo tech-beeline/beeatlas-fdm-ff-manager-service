@@ -28,6 +28,13 @@ def _row_ff_status(row: dict) -> str:
     return FF_STATUS_TEST
 
 
+def fitness_function_status_from_row(row: Optional[dict]) -> str:
+    """Публичная обёртка для нормализации status в ответах API."""
+    if row is None:
+        return FF_STATUS_TEST
+    return _row_ff_status(row)
+
+
 def get_connection():
     return psycopg2.connect(
         host=settings.db_host,
@@ -212,7 +219,11 @@ def get_fitness_function_by_code(code: str) -> Optional[dict]:
             (code.strip(),),
         )
         row = cur.fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        d = dict(row)
+        d["status"] = _row_ff_status(d)
+        return d
 
 
 def insert_outside_ff_call(ff_id: int, product_code: str, call_id: str) -> int:
@@ -351,7 +362,12 @@ def get_outside_ff_call(call_id: str) -> Optional[dict]:
             (cid,),
         )
         row = cur.fetchone()
-    return dict(row) if row is not None else None
+        if row is None:
+            return None
+        d = dict(row)
+        raw = d.get("ff_status")
+        d["ff_status"] = _row_ff_status({"status": raw})
+        return d
 
 
 def product_has_actual_ff_pass(product_code: str, ff_id: int) -> bool:
@@ -498,7 +514,12 @@ def get_all_fitness_functions() -> list[dict]:
             """
         )
         rows = cur.fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["status"] = _row_ff_status(d)
+        out.append(d)
+    return out
 
 
 def get_fitness_function_codes_excluded_from_run_all() -> set[str]:
@@ -540,7 +561,8 @@ def get_actual_results_by_product_code(product_code: str) -> list[dict]:
                 pf.count_detail,
                 pf.success_detail,
                 ff.code AS ff_code,
-                ff.description AS ff_description
+                ff.description AS ff_description,
+                ff.status AS ff_status
             FROM {SCHEMA}.product_ff pf
             JOIN {SCHEMA}.fitness_function ff ON ff.id = pf.ff_id
             WHERE LOWER(pf.product_code) = LOWER(%s) AND pf.is_actual = true
@@ -551,7 +573,12 @@ def get_actual_results_by_product_code(product_code: str) -> list[dict]:
             (code, FF_STATUS_TRIAL, FF_STATUS_ADOPT),
         )
         rows = cur.fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["ff_status"] = _row_ff_status({"status": d.get("ff_status")})
+        out.append(d)
+    return out
 
 
 def init_schema():

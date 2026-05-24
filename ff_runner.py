@@ -171,8 +171,9 @@ def _invoke_external_post(
                 return (
                     True,
                     (
-                        f"Тестовая асинхронная проверка вызвана (callId={call_id}). "
-                        f"После POST /api/v1/ff/webhook опросите GET /api/v1/ff/call/{call_id}."
+                        f"Внешняя проверка вызвана в асинхронном режиме (method_synchronous=false, "
+                        f"callId={call_id}). После POST /api/v1/ff/webhook опросите "
+                        f"GET /api/v1/ff/call/{call_id}."
                     ),
                     build_check_result_pending(call_id),
                 )

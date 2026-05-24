@@ -31,6 +31,7 @@ from db import (
     product_has_actual_ff_pass,
     add_fitness_function,
     get_fitness_function_by_code,
+    fitness_function_status_from_row,
     get_outside_ff_call,
     set_fitness_function_status,
     save_product_ff_result,
@@ -174,6 +175,21 @@ class FitnessFunctionItem(BaseModel):
     )
 
 
+class FitnessFunctionUpsertResponse(BaseModel):
+    """Ответ POST/PUT /api/v1/fitness-function."""
+
+    id: int
+    code: str
+    description: str
+    applicability: Optional[str] = None
+    auxiliary_check: bool
+    status: str = Field(..., description="Статус: TEST, TRIAL, ADOPT")
+    script_stored: bool
+    script_attached: bool
+    method: Optional[str] = None
+    method_synchronous: bool = False
+
+
 class ActualResultRow(BaseModel):
     """Одна актуальная запись результата проверки (product_ff + данные проверки)."""
 
@@ -182,6 +198,7 @@ class ActualResultRow(BaseModel):
     ff_id: int
     ff_code: str
     ff_description: str
+    status: str = Field(..., description="Статус проверки: TEST, TRIAL, ADOPT")
     is_check: bool
     create_date: datetime
     details: Optional[Any] = Field(
@@ -469,7 +486,7 @@ async def _perform_fitness_function_upsert(
         "description": description,
         "applicability": applicability,
         "auxiliary_check": aux,
-        "status": ff_status,
+        "status": fitness_function_status_from_row(row) if row else normalize_ff_status(ff_status),
         "script_stored": set_script,
         "script_attached": attached,
         "method": method_stored,
@@ -480,6 +497,7 @@ async def _perform_fitness_function_upsert(
 @app.post(
     "/api/v1/fitness-function",
     summary="Создать проверку (multipart)",
+    response_model=FitnessFunctionUpsertResponse,
     responses=_openapi_client_errors(405, 409, 422),
 )
 async def create_fitness_function(
@@ -541,6 +559,7 @@ async def create_fitness_function(
 @app.put(
     "/api/v1/fitness-function/{code}",
     summary="Обновить проверку (multipart)",
+    response_model=FitnessFunctionUpsertResponse,
     responses=_openapi_client_errors(404, 405, 422),
 )
 async def update_fitness_function(
@@ -562,6 +581,7 @@ async def update_fitness_function(
     """
     **multipart/form-data** — обновление существующей проверки. Если код не найден — **404**.
     После обновления статус снова **TEST**. Смена на TRIAL/ADOPT — **POST .../status**.
+    Поле **method_synchronous** меняется только если передано в форме (иначе сохраняется прежнее значение).
     """
     if not get_fitness_function_by_code(code.strip()):
         raise HTTPException(
@@ -570,9 +590,11 @@ async def update_fitness_function(
         )
 
     aux = _form_bool_optional(auxiliary_check)
-    msync = _form_bool_optional(method_synchronous)
+    set_msync = method_synchronous is not None
+    msync = _form_bool_optional(method_synchronous) if set_msync else False
     method_for_db = None
-    if method is not None:
+    set_method = method is not None
+    if set_method:
         s = str(method).strip()
         method_for_db = s if s else None
 
@@ -589,9 +611,9 @@ async def update_fitness_function(
         aux=aux,
         ff_status=FF_STATUS_TEST,
         method=method_for_db,
-        set_method=True,
+        set_method=set_method,
         method_synchronous=msync,
-        set_method_synchronous=True,
+        set_method_synchronous=set_msync,
         script_file=script_file,
         script=script,
         create_only=False,
@@ -615,7 +637,7 @@ def _fitness_function_response_from_row(row: dict) -> dict:
         "description": row.get("description"),
         "applicability": row.get("applicability"),
         "auxiliary_check": bool(row.get("auxiliary_check")),
-        "status": (row.get("status") or FF_STATUS_TEST).strip().upper(),
+        "status": fitness_function_status_from_row(row),
         "method": method_stored,
         "method_synchronous": bool(row.get("method_synchronous")),
     }
@@ -738,9 +760,7 @@ def run_one(
         raise HTTPException(status_code=400, detail="Поле app не может быть пустым")
 
     ff_row = get_fitness_function_by_code(code)
-    ff_status_run = (ff_row.get("status") or FF_STATUS_TEST).strip().upper() if ff_row else FF_STATUS_TEST
-
-    if not skips_applicability_check(ff_status_run):
+    if ff_row and not skips_applicability_check(fitness_function_status_from_row(ff_row)):
         ff_app_map = get_fitness_function_applicabilities()
         code_to_id = get_fitness_function_code_to_id()
         applicability = ff_app_map.get(code)
@@ -774,13 +794,18 @@ def run_one(
     )
     if not success:
         raise HTTPException(status_code=400, detail=message)
-    return {
+    out: dict[str, Any] = {
         "code": code,
         "app": body.app,
         "success": True,
         "message": message,
         "check_result": check_result,
     }
+    if ff_row:
+        out["status"] = fitness_function_status_from_row(ff_row)
+        if (ff_row.get("method") or "").strip():
+            out["method_synchronous"] = bool(ff_row.get("method_synchronous"))
+    return out
 
 
 @app.post(
@@ -832,6 +857,11 @@ def run_all(
 
     results: dict = {}
     ran: set[str] = set()
+    ff_status_by_code = {
+        (r.get("code") or ""): fitness_function_status_from_row(r)
+        for r in get_all_fitness_functions()
+        if r.get("code")
+    }
 
     # 1) Сначала все с applicability NULL / пусто
     batch_null = [c for c in all_codes if _applicability_empty(ff_app_map.get(c))]
@@ -843,7 +873,12 @@ def run_all(
             data=data,
             doc_id=doc_id_param,
         )
-        results[code] = {"success": ok, "message": msg, "check_result": check_result}
+        results[code] = {
+            "success": ok,
+            "message": msg,
+            "check_result": check_result,
+            "status": ff_status_by_code.get(code, FF_STATUS_TEST),
+        }
         ran.add(code)
 
     # 2) Затем циклически — с непустой applicability, когда предусловия выполнены
@@ -865,7 +900,12 @@ def run_all(
                 data=data,
                 doc_id=doc_id_param,
             )
-            results[code] = {"success": ok, "message": msg, "check_result": check_result}
+            results[code] = {
+                "success": ok,
+                "message": msg,
+                "check_result": check_result,
+                "status": ff_status_by_code.get(code, FF_STATUS_TEST),
+            }
             ran.add(code)
 
     skipped = [
@@ -902,8 +942,9 @@ def get_ff_call_result(call_id: str):
     Статус асинхронного внешнего вызова по **callId** (из ответа POST /api/v1/run/{code} или исходящего POST на method).
 
     - **pending** — webhook ещё не пришёл;
-    - **done** — для **test=true** в **check_result** детали расчёта (без product_ff);
-      для боевой проверки результат в **product_ff** / actual-results.
+    - **call_status** — `pending` / `done` (состояние вызова outside_ff);
+    - **status** — статус проверки TEST / TRIAL / ADOPT;
+    - при **done** и TEST — **check_result** с деталями (без product_ff).
     """
     row = get_outside_ff_call(call_id)
     if row is None:
@@ -915,16 +956,17 @@ def get_ff_call_result(call_id: str):
         "callId": row["call_id"],
         "ff_code": row.get("ff_code"),
         "product_code": row.get("product_code"),
-        "ff_status": (row.get("ff_status") or FF_STATUS_TEST).strip().upper(),
+        "status": row.get("ff_status") or FF_STATUS_TEST,
     }
-    if row.get("status") != "done":
-        return {**base, "status": "pending", "check_result": None}
+    call_state = row.get("status")
+    if call_state != "done":
+        return {**base, "call_status": "pending", "check_result": None}
     check_result = check_result_from_outside_ff_row(row)
     if check_result is not None:
-        return {**base, "status": "done", "check_result": check_result}
+        return {**base, "call_status": "done", "check_result": check_result}
     return {
         **base,
-        "status": "done",
+        "call_status": "done",
         "check_result": None,
         "message": "Результат записан в product_ff (боевой режим). См. GET /api/v1/product/{code}/actual-results",
     }
@@ -953,13 +995,21 @@ def ff_webhook(body: FfWebhookBody):
             status_code=404,
             detail=f"Вызов с callId не найден (outside_ff)",
         )
+    call_row = get_outside_ff_call(body.call_id)
+    ff_st = fitness_function_status_from_row(
+        {"status": call_row.get("ff_status")} if call_row else None
+    )
     if outcome == "already_done":
-        return {"status": "already_processed"}
+        return {"result": "already_processed", "status": ff_st}
     if outcome == "test_ok":
-        row = get_outside_ff_call(body.call_id)
-        check_result = check_result_from_outside_ff_row(row) if row else None
-        return {"status": "ok", "saved_to_product_ff": False, "check_result": check_result}
-    return {"status": "ok", "saved_to_product_ff": True}
+        check_result = check_result_from_outside_ff_row(call_row) if call_row else None
+        return {
+            "result": "ok",
+            "saved_to_product_ff": False,
+            "status": ff_st,
+            "check_result": check_result,
+        }
+    return {"result": "ok", "saved_to_product_ff": True, "status": ff_st}
 
 
 @app.post(
@@ -985,14 +1035,23 @@ def post_product_ff_result(code: str, body: ProductFfResultBody):
             status_code=404,
             detail=f"Проверка с кодом '{body.ff_code}' не найдена в fitness_function",
         )
+    ff_row = get_fitness_function_by_code(body.ff_code)
+    ff_st = fitness_function_status_from_row(ff_row)
     if status == "test_mode":
         return {
             "saved": False,
             "reason": "test",
             "product_code": code.strip(),
             "ff_code": body.ff_code.strip(),
+            "status": ff_st,
         }
-    return {"id": row_id, "product_code": code.strip(), "ff_code": body.ff_code.strip(), "saved": True}
+    return {
+        "id": row_id,
+        "product_code": code.strip(),
+        "ff_code": body.ff_code.strip(),
+        "saved": True,
+        "status": ff_st,
+    }
 
 
 @app.get(
@@ -1029,6 +1088,7 @@ def get_product_actual_results(code: str):
                 "ff_id": r["ff_id"],
                 "ff_code": r["ff_code"],
                 "ff_description": r["ff_description"],
+                "status": r.get("ff_status") or FF_STATUS_ADOPT,
                 "is_check": r["is_check"],
                 "create_date": r["create_date"],
                 "details": details,
