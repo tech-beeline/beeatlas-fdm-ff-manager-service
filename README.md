@@ -58,7 +58,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | POST | `/api/v1/run-all` | Запуск всех подходящих проверок; тело: `{"app": "<мнемоника>"}`; query `docId` (опц.) |
 | POST | `/api/v1/ff/webhook` | Колбэк внешней проверки после вызова `method` |
 | POST | `/api/v1/product/{code}/ff` | Запись результата проверки в `product_ff` (используется скриптами через `run_check` в `_common.py`) |
-| GET | `/api/v1/product/{code}/actual-results` | Актуальные результаты основных проверок по продукту (без вспомогательных и тестовых) |
+| GET | `/api/v1/product/{code}/actual-results` | Актуальные результаты по продукту: основные (по умолчанию) или вспомогательные (`?auxiliary=true`); без TEST |
 
 Запуск одной проверки: либо исполняется скрипт `{code}.py`, либо выполняется POST на URL из поля `method` в `fitness_function`. Проверки со статусом **TEST** не входят в `run-all`.
 

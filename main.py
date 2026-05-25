@@ -992,17 +992,30 @@ def post_product_ff_result(code: str, body: ProductFfResultBody):
     response_model=ProductActualResultsBody,
     responses=_openapi_client_errors(405),
 )
-def get_product_actual_results(code: str):
+def get_product_actual_results(
+    code: str,
+    auxiliary: Optional[bool] = Query(
+        default=None,
+        description=(
+            "Если true — только вспомогательные проверки (auxiliary_check); "
+            "иначе основные (без auxiliary_check). TEST не включается."
+        ),
+    ),
+):
     """
-    По коду продукта возвращает актуальные результаты основных проверок (is_actual == true),
-    без вспомогательных (auxiliary_check) и без тестовых (test). Пустой список, если записей ещё нет.
+    По коду продукта возвращает актуальные результаты проверок (is_actual == true),
+    без тестовых (status TEST). По умолчанию — основные (без auxiliary_check);
+    при query **auxiliary=true** — только вспомогательные. Пустой список, если записей ещё нет.
     Код продукта в пути сравнивается без учёта регистра.
     В ответе:
     - details — json_details из product_ff,
     - countDetail — count_detail,
     - successDetail — success_detail.
     """
-    raw_results = get_actual_results_by_product_code(code)
+    raw_results = get_actual_results_by_product_code(
+        code,
+        auxiliary_only=auxiliary is True,
+    )
 
     results = []
     for r in raw_results:

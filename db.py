@@ -559,16 +559,27 @@ def get_fitness_function_codes_excluded_from_run_all() -> set[str]:
     }
 
 
-def get_actual_results_by_product_code(product_code: str) -> list[dict]:
+def get_actual_results_by_product_code(
+    product_code: str,
+    *,
+    auxiliary_only: bool = False,
+) -> list[dict]:
     """
-    По коду продукта (внешняя мнемоника) возвращает актуальные записи product_ff для основных проверок:
-    не включаются fitness_function с auxiliary_check = true или status = TEST.
+    По коду продукта (внешняя мнемоника) возвращает актуальные записи product_ff:
+    - auxiliary_only=False (по умолчанию): основные проверки (auxiliary_check не true);
+    - auxiliary_only=True: только вспомогательные (auxiliary_check = true).
+    В обоих случаях не включается status = TEST (только TRIAL и ADOPT).
     Поля: id, product_code, ff_id, ff_code, ff_description, is_check, create_date,
     json_details, count_detail, success_detail.
     Если записей нет — пустой список.
     Сравнение кода продукта без учёта регистра.
     """
     code = product_code.strip()
+    aux_clause = (
+        "(ff.auxiliary_check IS TRUE)"
+        if auxiliary_only
+        else "(ff.auxiliary_check IS NOT TRUE)"
+    )
     with get_cursor() as cur:
         cur.execute(
             f"""
@@ -587,7 +598,7 @@ def get_actual_results_by_product_code(product_code: str) -> list[dict]:
             FROM {SCHEMA}.product_ff pf
             JOIN {SCHEMA}.fitness_function ff ON ff.id = pf.ff_id
             WHERE LOWER(pf.product_code) = LOWER(%s) AND pf.is_actual = true
-              AND (ff.auxiliary_check IS NOT TRUE)
+              AND {aux_clause}
               AND (ff.status IN (%s, %s))
             ORDER BY pf.create_date
             """,
