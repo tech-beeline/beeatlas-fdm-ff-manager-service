@@ -176,7 +176,7 @@ class FitnessFunctionItem(BaseModel):
 
 
 class FitnessFunctionUpsertResponse(BaseModel):
-    """Ответ POST/PUT /api/v1/fitness-function."""
+    """Ответ PUT /api/v1/fitness-function/{code}."""
 
     id: int
     code: str
@@ -407,10 +407,8 @@ async def _perform_fitness_function_upsert(
     set_method_synchronous: bool,
     script_file: Optional[StarletteUploadFile],
     script: Optional[str],
-    *,
-    create_only: bool,
-) -> Optional[dict]:
-    """Создание или обновление проверки: INSERT/UPDATE в БД, затем запись .py на диск."""
+) -> dict:
+    """Создание или обновление проверки (upsert): INSERT/UPDATE в БД, затем запись .py на диск."""
     set_script = False
     script_text: Optional[str] = None
     binary_payload: Optional[bytes] = None
@@ -455,11 +453,8 @@ async def _perform_fitness_function_upsert(
         set_method=set_method,
         method_synchronous=method_synchronous,
         set_method_synchronous=set_method_synchronous,
-        create_only=create_only,
+        create_only=False,
     )
-
-    if ff_id is None:
-        return None
 
     if script_file is not None:
         if binary_payload is not None:
@@ -494,75 +489,13 @@ async def _perform_fitness_function_upsert(
     }
 
 
-@app.post(
-    "/api/v1/fitness-function",
-    summary="Создать проверку (multipart)",
-    response_model=FitnessFunctionUpsertResponse,
-    responses=_openapi_client_errors(405, 409, 422),
-)
-async def create_fitness_function(
-    code: str = Form(..., description="Код проверки"),
-    description: str = Form(..., description="Описание"),
-    applicability: Optional[str] = Form(None),
-    auxiliary_check: Optional[str] = Form(None),
-    script: Optional[str] = Form(None),
-    script_file: UploadFile = File(None),
-    method: Optional[str] = Form(
-        None,
-        description="URL внешнего POST (пустой или не передавать — без внешнего вызова)",
-    ),
-    method_synchronous: Optional[str] = Form(
-        None,
-        description="Если method задан: true — синхронный HTTP (ответ как webhook); иначе асинхронный колбэк",
-    ),
-):
-    """
-    **multipart/form-data** — только создание новой проверки. Если код уже есть — **409 Conflict**.
-    Новая проверка всегда создаётся со статусом **TEST**.
-    Смена статуса — **POST /api/v1/fitness-function/{code}/status** (TRIAL, ADOPT).
-    Поля `script` и/или файл `script_file`; колонка **method** задаётся из поля `method` (пусто → NULL).
-    """
-    aux = _form_bool_optional(auxiliary_check)
-    msync = _form_bool_optional(method_synchronous)
-    method_for_db = None
-    if method is not None:
-        s = str(method).strip()
-        method_for_db = s if s else None
-
-    applicability_s = str(applicability).strip() if applicability is not None else None
-    if applicability_s == "":
-        applicability_s = None
-
-    c = code.strip()
-    result = await _perform_fitness_function_upsert(
-        code=c,
-        description=description,
-        applicability=applicability_s,
-        aux=aux,
-        ff_status=FF_STATUS_TEST,
-        method=method_for_db,
-        set_method=True,
-        method_synchronous=msync,
-        set_method_synchronous=True,
-        script_file=script_file,
-        script=script,
-        create_only=True,
-    )
-    if result is None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Проверка с кодом '{c}' уже существует",
-        )
-    return result
-
-
 @app.put(
     "/api/v1/fitness-function/{code}",
-    summary="Обновить проверку (multipart)",
+    summary="Создать или обновить проверку (multipart)",
     response_model=FitnessFunctionUpsertResponse,
-    responses=_openapi_client_errors(404, 405, 422),
+    responses=_openapi_client_errors(405, 422),
 )
-async def update_fitness_function(
+async def upsert_fitness_function(
     code: str,
     description: str = Form(..., description="Описание"),
     applicability: Optional[str] = Form(None),
@@ -579,32 +512,37 @@ async def update_fitness_function(
     ),
 ):
     """
-    **multipart/form-data** — обновление существующей проверки. Если код не найден — **404**.
-    После обновления статус снова **TEST**. Смена на TRIAL/ADOPT — **POST .../status**.
-    Поле **method_synchronous** меняется только если передано в форме (иначе сохраняется прежнее значение).
+    **multipart/form-data** — создание или обновление проверки по коду из path (upsert).
+    Если проверки с таким кодом нет — создаётся со статусом **TEST**; иначе обновляется, статус снова **TEST**.
+    Смена на TRIAL/ADOPT — **POST /api/v1/fitness-function/{code}/status**.
+    При обновлении: **method** / **method_synchronous** меняются только если поле передано в форме.
+    При создании: **method** и **method_synchronous** задаются из формы (как при первичной регистрации).
     """
-    if not get_fitness_function_by_code(code.strip()):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Проверка с кодом '{code.strip()}' не найдена",
-        )
+    c = code.strip()
+    existing = get_fitness_function_by_code(c)
 
     aux = _form_bool_optional(auxiliary_check)
-    set_msync = method_synchronous is not None
-    msync = _form_bool_optional(method_synchronous) if set_msync else False
     method_for_db = None
-    set_method = method is not None
-    if set_method:
-        s = str(method).strip()
-        method_for_db = s if s else None
+    if existing:
+        set_msync = method_synchronous is not None
+        msync = _form_bool_optional(method_synchronous) if set_msync else False
+        set_method = method is not None
+        if set_method:
+            s = str(method).strip()
+            method_for_db = s if s else None
+    else:
+        set_msync = True
+        msync = _form_bool_optional(method_synchronous)
+        set_method = True
+        if method is not None:
+            s = str(method).strip()
+            method_for_db = s if s else None
 
     applicability_s = str(applicability).strip() if applicability is not None else None
     if applicability_s == "":
         applicability_s = None
 
-    c = code.strip()
-
-    result = await _perform_fitness_function_upsert(
+    return await _perform_fitness_function_upsert(
         code=c,
         description=description,
         applicability=applicability_s,
@@ -616,14 +554,7 @@ async def update_fitness_function(
         set_method_synchronous=set_msync,
         script_file=script_file,
         script=script,
-        create_only=False,
     )
-    if result is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Проверка с кодом '{c}' не найдена",
-        )
-    return result
 
 
 def _fitness_function_response_from_row(row: dict) -> dict:

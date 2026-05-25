@@ -13,11 +13,10 @@
 
 ## Создание проверки через API
 
-**`POST /api/v1/fitness-function`** (`multipart/form-data`):
+**`PUT /api/v1/fitness-function/{code}`** (`multipart/form-data`):
 
 | Поле | Значение |
 |------|----------|
-| `code` | Уникальный код проверки |
 | `description` | Описание |
 | `method` | Полный URL (**POST**), куда FF Manager отправляет JSON |
 | `method_synchronous` | **`true`** (или `1`, `yes`, `on` — см. обработку формы в сервисе) |

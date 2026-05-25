@@ -51,8 +51,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | GET | `/api/v1/` | Краткая информация о сервисе и ссылка на документацию |
 | GET | `/api/v1/scripts` | Коды всех скриптов проверок (файлы `*.py` в каталоге, кроме `_*.py` и `__init__.py`) |
 | GET | `/api/v1/fitness-functions` | Список записей `fitness_function` из БД |
-| POST | `/api/v1/fitness-function` | Создание проверки (`multipart`; статус **TEST**; при занятом коде — 409) |
-| PUT | `/api/v1/fitness-function/{code}` | Обновление проверки (снова **TEST**) |
+| PUT | `/api/v1/fitness-function/{code}` | Создание или обновление проверки (`multipart`, upsert; статус **TEST**) |
 | POST | `/api/v1/fitness-function/{code}/status` | Смена статуса: **TEST**, **TRIAL**, **ADOPT** |
 | GET | `/api/v1/ff/call/{callId}` | Статус/результат асинхронного вызова (для тестовых — детали без `product_ff`) |
 | POST | `/api/v1/run/{code}` | Запуск одной проверки для приложения; тело JSON: `{"app": "<мнемоника>"}`; query `docId` (опц.) |

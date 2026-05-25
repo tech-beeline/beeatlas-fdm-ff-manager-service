@@ -6,7 +6,7 @@
 
 - Файл: `scripts/<КОД>.py`, например `scripts/MYCHK-1.py`.
 - **Код проверки** = имя файла **без** `.py` (`MYCHK-1`).
-- Этот же код должен быть зарегистрирован в таблице `fitness_function` (через UI или `POST /fitness-function`). Иначе API при записи результата вернёт 404.
+- Этот же код должен быть зарегистрирован в таблице `fitness_function` (через UI или `PUT /fitness-function/{code}`). Иначе API при записи результата вернёт 404.
 - При регистрации текст скрипта (UTF-8) сохраняется в поле **`fitness_function.script`** — из загруженного файла или из поля формы **`script`**.
 
 Игнорируются при автообнаружении:
@@ -196,9 +196,9 @@ def execute(app_code: str, data: dict[str, Any]) -> ExecuteResult:
 
 - **`run-all`** запускает только скрипты из каталога, для которых в БД **не** выставлен флаг `test`, с учётом `applicability` и порядка (сначала без предусловий).
 - Проверки со статусом **TEST** и с **`auxiliary_check = true`** не попадают в **actual-results**; в **run-all** не участвует только **TEST** (вспомогательные — участвуют).
-- **POST /fitness-function** — **TEST**. **PUT** снова **TEST**. **POST .../status** — **TRIAL** или **ADOPT** (маркеры, поведение как у боевой проверки). В **TEST**: без applicability, без `product_ff`; детали в **`check_result`**.
+- **PUT /fitness-function/{code}** — создание или обновление, статус **TEST**. **POST .../status** — **TRIAL** или **ADOPT** (маркеры, поведение как у боевой проверки). В **TEST**: без applicability, без `product_ff`; детали в **`check_result`**.
 
-Уточняйте флаги при создании проверки через `POST /fitness-function` (`multipart/form-data`; повтор того же кода — 409).
+Уточняйте флаги при регистрации проверки через `PUT /fitness-function/{code}` (`multipart/form-data`, upsert).
 
 ## Рекомендации
 
@@ -210,4 +210,4 @@ def execute(app_code: str, data: dict[str, Any]) -> ExecuteResult:
 ## Связанные эндпоинты API
 
 - **`POST /product/{code}/ff`** — тело: `ff_code`, `is_check`, опционально `json_details`, `count_detail`, `success_detail` (используется `run_check` внутри `_common.py`).
-- **`POST /fitness-function`** — `multipart/form-data`: только создание новой проверки (при занятом коде — 409); метаданные и текст/файл скрипта.
+- **`PUT /fitness-function/{code}`** — `multipart/form-data`: создание или обновление (upsert); метаданные и текст/файл скрипта.

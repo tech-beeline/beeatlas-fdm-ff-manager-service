@@ -13,11 +13,10 @@
 
 ## Создание проверки через API
 
-**`POST /api/v1/fitness-function`** (`multipart/form-data`):
+**`PUT /api/v1/fitness-function/{code}`** (`multipart/form-data`):
 
 | Поле | Значение |
 |------|----------|
-| `code` | Уникальный код проверки |
 | `description` | Описание |
 | `method` | Полный URL, на который FF Manager шлёт **POST** (JSON) |
 | `method_synchronous` | Не передавать, или **`false`** / не отмечать (как принято в вашем клиенте для «ложного» флага) |
