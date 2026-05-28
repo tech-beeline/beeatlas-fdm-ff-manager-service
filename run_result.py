@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """Формирование check_result для ответов POST /api/v1/run/{code}."""
 import json
 from typing import Any, Mapping, Optional

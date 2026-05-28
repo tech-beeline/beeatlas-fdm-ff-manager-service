@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """Подключение к PostgreSQL и инициализация схемы ff."""
 import json
 from typing import Any, Optional

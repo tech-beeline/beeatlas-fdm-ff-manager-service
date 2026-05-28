@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """Запуск проверки: скрипт на диске или внешний POST по fitness_function.method."""
 import json
 import urllib.error

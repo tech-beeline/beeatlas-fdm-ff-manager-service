@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """Сервис — менеджер проверок (fitness functions). API: uvicorn main:app — см. GET /docs."""
 import ast
 import json

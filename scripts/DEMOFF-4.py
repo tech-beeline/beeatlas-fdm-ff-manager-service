@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 #!/usr/bin/env python3
 """
 Скрипт проверки DEMOFF-1.

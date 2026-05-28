@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """Конфигурация сервиса и подключения к БД."""
 from pydantic_settings import BaseSettings
 

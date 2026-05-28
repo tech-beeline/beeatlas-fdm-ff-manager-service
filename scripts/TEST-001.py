@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 #!/usr/bin/env python3
 """
 Проверка ADR-01: в документе Structurizr должен быть хотя бы один ADR.

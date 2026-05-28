@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """
 Статусная модель fitness_function: TEST, TRIAL, ADOPT.
 

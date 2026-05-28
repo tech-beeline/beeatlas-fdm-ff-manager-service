@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """
 Общая логика для скриптов проверок:
 - отправка результата в API FF Manager (POST /api/v1/product/{alias}/ff), без прямого доступа к БД;

@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """Обнаружение и запуск скриптов проверок. Поддержка добавления/удаления скриптов без перезапуска."""
 import errno
 import importlib.util

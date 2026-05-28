@@ -1,3 +1,4 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """
 HTTP-клиент с HMAC-аутентификацией Structurizr (X-Authorization, Nonce).
 
