@@ -113,6 +113,8 @@ def run_ff_check(
     structurizr_credentials: Optional[Tuple[str, str]] = None,
     data: Optional[dict[str, Any]] = None,
     doc_id: Optional[str] = None,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
 ) -> Tuple[bool, str, CheckResultPayload]:
     """
     Если в БД у фитнес-функции задан непустой method (URL) — POST { callId, productCode }, запись в outside_ff.
@@ -136,6 +138,8 @@ def run_ff_check(
                 synchronous=synchronous,
                 doc_id=doc_id,
                 is_test_mode=is_test_mode,
+                source_type=source_type,
+                source_id=source_id,
             )
 
     return run_script(
@@ -144,6 +148,8 @@ def run_ff_check(
         structurizr_credentials=structurizr_credentials,
         data=data,
         is_test_mode=is_test_mode,
+        source_type=source_type,
+        source_id=source_id,
     )
 
 
@@ -155,10 +161,18 @@ def _invoke_external_post(
     synchronous: bool,
     doc_id: Optional[str],
     is_test_mode: bool,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
 ) -> Tuple[bool, str, CheckResultPayload]:
     call_id = str(uuid.uuid4())
     product_code = app_mnemonic.strip()
-    insert_outside_ff_call(ff_id=ff_id, product_code=product_code, call_id=call_id)
+    insert_outside_ff_call(
+        ff_id=ff_id,
+        product_code=product_code,
+        call_id=call_id,
+        source_type=source_type,
+        source_id=source_id,
+    )
     target_url = _url_with_doc_id_query(url, doc_id)
     try:
         status, text = _post_json(

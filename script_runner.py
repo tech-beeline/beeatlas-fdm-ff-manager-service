@@ -273,6 +273,8 @@ def run_script(
     data: Optional[dict[str, Any]] = None,
     *,
     is_test_mode: bool = False,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
 ) -> Tuple[bool, str, CheckResultPayload]:
     """
     Запуск одного скрипта проверки для приложения.
@@ -295,6 +297,10 @@ def run_script(
     env["FF_DB_PASSWORD"] = settings.db_password
     env["FF_DB_NAME"] = settings.db_name
     env["FF_API_BASE_URL"] = settings.api_base_url
+    if source_type:
+        env["FF_SOURCE_TYPE"] = source_type
+    if source_id:
+        env["FF_SOURCE_ID"] = source_id
     if structurizr_credentials:
         env["FF_STRUCTURIZR_API_KEY"] = structurizr_credentials[0]
         env["FF_STRUCTURIZR_API_SECRET"] = structurizr_credentials[1]
@@ -303,7 +309,14 @@ def run_script(
 
     try:
         ok, out, done, check_from_execute = _run_script_module(
-            path, code, app_mnemonic, env, data, is_test_mode=is_test_mode
+            path,
+            code,
+            app_mnemonic,
+            env,
+            data,
+            is_test_mode=is_test_mode,
+            source_type=source_type,
+            source_id=source_id,
         )
         if done:
             if not ok:
@@ -362,6 +375,8 @@ def _run_script_module(
     data: Optional[dict[str, Any]] = None,
     *,
     is_test_mode: bool = False,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
 ) -> Tuple[bool, str, bool, CheckResultPayload]:
     """
     Пытается выполнить скрипт как модуль через функцию execute(app_code).
@@ -409,6 +424,8 @@ def _run_script_module(
                 ff_code=code.strip(),
                 is_check=result["is_check"],
                 details=result["details"],
+                source_type=source_type,
+                source_id=source_id,
             )
         return True, capture.getvalue().strip(), True, check_payload
     except Exception as e:

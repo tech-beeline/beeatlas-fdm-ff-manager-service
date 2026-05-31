@@ -95,6 +95,8 @@ def persist_execute_result(
     ff_code: str,
     is_check: bool,
     details: list[dict[str, Any]],
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
 ) -> None:
     """
     Сохраняет результат проверки: count_detail = len(details), success_detail — число элементов с check=true.
@@ -113,6 +115,8 @@ def persist_execute_result(
         success_detail=success_detail,
         count_detail=count_detail,
         json_details=json_details,
+        source_type=source_type,
+        source_id=source_id,
     )
 
 
@@ -136,6 +140,8 @@ def run_check(
     success_detail: Optional[int] = None,
     count_detail: Optional[int] = None,
     json_details: Optional[str] = None,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
 ) -> None:
     """
     Отправляет результат проверки на API: создаётся актуальная запись product_ff.
@@ -151,6 +157,17 @@ def run_check(
     path = urllib.parse.quote(alias, safe="")
     url = f"{base}/api/v1/product/{path}/ff"
 
+    if source_type is None:
+        source_type = os.environ.get("FF_SOURCE_TYPE") or None
+    if source_id is None:
+        source_id = os.environ.get("FF_SOURCE_ID") or None
+    if source_type:
+        source_type = source_type.strip() or None
+    if source_id:
+        source_id = source_id.strip() or None
+    if not source_type:
+        source_id = None
+
     payload = {
         "ff_code": script_code,
         "is_check": is_check,
@@ -158,6 +175,10 @@ def run_check(
         "count_detail": count_detail,
         "success_detail": success_detail,
     }
+    if source_type:
+        payload["source_type"] = source_type
+        if source_id:
+            payload["source_id"] = source_id
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,

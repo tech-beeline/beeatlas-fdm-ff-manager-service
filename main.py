@@ -215,6 +215,14 @@ class ActualResultRow(BaseModel):
     )
     countDetail: Optional[int] = None
     successDetail: Optional[int] = None
+    source_type: Optional[str] = Field(
+        default=None,
+        description="Тип источника запуска расчёта",
+    )
+    source_id: Optional[str] = Field(
+        default=None,
+        description="Идентификатор источника запуска расчёта",
+    )
 
 
 class ProductActualResultsBody(BaseModel):
@@ -268,6 +276,18 @@ class RunRequest(BaseModel):
     app: str
 
 
+def _normalize_run_source(
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Тип без id допустим; id без типа игнорируется."""
+    st = source_type.strip() if source_type else None
+    if not st:
+        return None, None
+    sid = source_id.strip() if source_id else None
+    return st, sid or None
+
+
 class RunCheckResult(BaseModel):
     """Результат одного запуска проверки в ответе POST /api/v1/run/{code}."""
 
@@ -316,6 +336,8 @@ class ProductFfResultBody(BaseModel):
     json_details: Optional[Union[str, list, dict]] = None
     count_detail: Optional[int] = None
     success_detail: Optional[int] = None
+    source_type: Optional[str] = None
+    source_id: Optional[str] = None
 
 
 class FfWebhookBody(BaseModel):
@@ -677,6 +699,14 @@ def run_one(
         default=None,
         description="Идентификатор документа для загрузки в data перед запуском проверки",
     ),
+    source_type: Optional[str] = Query(
+        default=None,
+        description="Тип источника запуска (можно без source_id; для TRIAL/ADOPT сохраняется в product_ff)",
+    ),
+    source_id: Optional[str] = Query(
+        default=None,
+        description="Идентификатор источника запуска (игнорируется без source_type)",
+    ),
 ):
     """
     Запуск проверки для продукта: скрипт .py или POST на URL из fitness_function.method.
@@ -718,12 +748,16 @@ def run_one(
         doc_id_param = raw_doc_id
         data = _fetch_document_data(raw_doc_id)
 
+    run_source_type, run_source_id = _normalize_run_source(source_type, source_id)
+
     success, message, check_result = run_ff_check(
         code,
         body.app,
         structurizr_credentials=sz_creds,
         data=data,
         doc_id=doc_id_param,
+        source_type=run_source_type,
+        source_id=run_source_id,
     )
     if not success:
         raise HTTPException(status_code=400, detail=message)
@@ -750,6 +784,14 @@ def run_all(
     docId: Optional[str] = Query(
         default=None,
         description="Идентификатор документа для загрузки в data перед запуском проверок",
+    ),
+    source_type: Optional[str] = Query(
+        default=None,
+        description="Тип источника запуска (можно без source_id; для TRIAL/ADOPT сохраняется в product_ff)",
+    ),
+    source_id: Optional[str] = Query(
+        default=None,
+        description="Идентификатор источника запуска (игнорируется без source_type)",
     ),
 ):
     """
@@ -789,6 +831,8 @@ def run_all(
         doc_id_param = raw_doc_id
         data = _fetch_document_data(raw_doc_id)
 
+    run_source_type, run_source_id = _normalize_run_source(source_type, source_id)
+
     results: dict = {}
     ran: set[str] = set()
     ff_status_by_code = {
@@ -806,6 +850,8 @@ def run_all(
             structurizr_credentials=sz_creds,
             data=data,
             doc_id=doc_id_param,
+            source_type=run_source_type,
+            source_id=run_source_id,
         )
         results[code] = {
             "success": ok,
@@ -833,6 +879,8 @@ def run_all(
                 structurizr_credentials=sz_creds,
                 data=data,
                 doc_id=doc_id_param,
+                source_type=run_source_type,
+                source_id=run_source_id,
             )
             results[code] = {
                 "success": ok,
@@ -956,6 +1004,7 @@ def post_product_ff_result(code: str, body: ProductFfResultBody):
     Скрипты проверок вызывают этот метод вместо прямого доступа к БД.
     """
     json_details = _json_details_for_db(body.json_details)
+    body_source_type, body_source_id = _normalize_run_source(body.source_type, body.source_id)
     status, row_id = save_product_ff_result(
         code,
         body.ff_code,
@@ -963,6 +1012,8 @@ def post_product_ff_result(code: str, body: ProductFfResultBody):
         json_details=json_details,
         count_detail=body.count_detail,
         success_detail=body.success_detail,
+        source_type=body_source_type,
+        source_id=body_source_id,
     )
     if status == "fitness_function_not_found":
         raise HTTPException(
@@ -1041,6 +1092,8 @@ def get_product_actual_results(
                 "details": details,
                 "countDetail": r.get("count_detail"),
                 "successDetail": r.get("success_detail"),
+                "source_type": r.get("source_type"),
+                "source_id": r.get("source_id"),
             }
         )
 

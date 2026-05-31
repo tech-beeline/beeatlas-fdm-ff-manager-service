@@ -127,6 +127,8 @@ def save_product_ff_result(
     json_details: Optional[str] = None,
     count_detail: Optional[int] = None,
     success_detail: Optional[int] = None,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
 ) -> tuple[str, Optional[int]]:
     """
     Добавляет актуальную запись product_ff для продукта (внешний код) и проверки (ff code).
@@ -171,12 +173,14 @@ def save_product_ff_result(
                 json_details,
                 count_detail,
                 success_detail,
+                source_type,
+                source_id,
                 create_date
             )
-            VALUES (%s, %s, %s, true, %s, %s, %s, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, true, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             RETURNING id
             """,
-            (code_key, ff_id, is_check, json_details, count_detail, success_detail),
+            (code_key, ff_id, is_check, json_details, count_detail, success_detail, source_type, source_id),
         )
         new_row = cur.fetchone()
         return ("ok", new_row["id"])
@@ -242,16 +246,25 @@ def get_fitness_function_by_code(code: str) -> Optional[dict]:
         return d
 
 
-def insert_outside_ff_call(ff_id: int, product_code: str, call_id: str) -> int:
+def insert_outside_ff_call(
+    ff_id: int,
+    product_code: str,
+    call_id: str,
+    *,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+) -> int:
     """Статус начального вызова — 'call'. Возвращает id строки outside_ff."""
     with get_cursor() as cur:
         cur.execute(
             f"""
-            INSERT INTO {SCHEMA}.outside_ff (ff_id, product_code, call_id, status)
-            VALUES (%s, %s, %s, 'call')
+            INSERT INTO {SCHEMA}.outside_ff (
+                ff_id, product_code, call_id, status, source_type, source_id
+            )
+            VALUES (%s, %s, %s, 'call', %s, %s)
             RETURNING id
             """,
-            (ff_id, product_code.strip(), call_id.strip()),
+            (ff_id, product_code.strip(), call_id.strip(), source_type, source_id),
         )
         return cur.fetchone()["id"]
 
@@ -288,7 +301,7 @@ def process_ff_webhook(
     with get_cursor() as cur:
         cur.execute(
             f"""
-            SELECT id, ff_id, product_code, status
+            SELECT id, ff_id, product_code, status, source_type, source_id
             FROM {SCHEMA}.outside_ff
             WHERE call_id = %s
             FOR UPDATE
@@ -303,6 +316,8 @@ def process_ff_webhook(
 
         ff_id = row["ff_id"]
         pc = row["product_code"]
+        source_type = row.get("source_type")
+        source_id = row.get("source_id")
 
         cur.execute(
             f"SELECT status FROM {SCHEMA}.fitness_function WHERE id = %s",
@@ -337,11 +352,13 @@ def process_ff_webhook(
                     json_details,
                     count_detail,
                     success_detail,
+                    source_type,
+                    source_id,
                     create_date
                 )
-                VALUES (%s, %s, %s, true, %s, %s, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, true, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 """,
-                (pc, ff_id, is_check, json_details, count_detail, success_detail),
+                (pc, ff_id, is_check, json_details, count_detail, success_detail, source_type, source_id),
             )
         if is_test_mode:
             cur.execute(
@@ -571,7 +588,7 @@ def get_actual_results_by_product_code(
     - auxiliary_only=True: только вспомогательные (auxiliary_check = true).
     В обоих случаях не включается status = TEST (только TRIAL и ADOPT).
     Поля: id, product_code, ff_id, ff_code, ff_description, is_check, create_date,
-    json_details, count_detail, success_detail.
+    json_details, count_detail, success_detail, source_type, source_id.
     Если записей нет — пустой список.
     Сравнение кода продукта без учёта регистра.
     """
@@ -593,6 +610,8 @@ def get_actual_results_by_product_code(
                 pf.json_details,
                 pf.count_detail,
                 pf.success_detail,
+                pf.source_type,
+                pf.source_id,
                 ff.code AS ff_code,
                 ff.description AS ff_description,
                 ff.status AS ff_status
@@ -737,6 +756,22 @@ def init_schema():
         cur.execute(f"""
             ALTER TABLE {SCHEMA}.outside_ff
             ADD COLUMN IF NOT EXISTS success_detail INT;
+        """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.product_ff
+            ADD COLUMN IF NOT EXISTS source_type TEXT;
+        """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.product_ff
+            ADD COLUMN IF NOT EXISTS source_id TEXT;
+        """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.outside_ff
+            ADD COLUMN IF NOT EXISTS source_type TEXT;
+        """)
+        cur.execute(f"""
+            ALTER TABLE {SCHEMA}.outside_ff
+            ADD COLUMN IF NOT EXISTS source_id TEXT;
         """)
         cur.execute(
             f"""
