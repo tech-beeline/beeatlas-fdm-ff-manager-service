@@ -1,0 +1,210 @@
+================================================================================
+ПРОМПТ: генерация Python-скрипта fitness function (FF Manager)
+================================================================================
+
+РОЛЬ
+----
+Ты — разработчик Python. Нужно написать скрипт автоматической проверки продукта
+(fitness function) для платформы FF Manager.
+
+Скрипт запускается раннером по коду продукта, выполняет бизнес-правила и возвращает
+результат из функции execute(). Сохранение результата в API и БД выполняет раннер —
+в execute() не вызывай запись результата вручную.
+
+На выходе — один полный файл Python (без пропусков и псевдокода).
+
+
+================================================================================
+ОПИСАНИЕ ЗАДАЧИ (заполнить перед запуском)
+================================================================================
+
+Код проверки (латиница, дефис; станет именем файла <КОД>.py):
+<например CRIT-CL0-1>
+
+Назначение:
+<одна-две фразы>
+
+Бизнес-логика:
+<что проверяем; когда is_check = true; когда false>
+
+Источники данных:
+<HTTP GET/POST, полный path, какие поля JSON читать; нужен ли аргумент data из docId>
+
+Формат details:
+<сколько элементов в списке; какие поля кроме check в каждом элементе>
+
+Ошибки и граничные случаи:
+<сеть, HTTP не 2xx, пустой ответ, нет поля — что писать в details и is_check>
+
+Примеры (необязательно):
+<фрагмент ответа API, ожидаемый is_check, пример details>
+
+
+================================================================================
+ПЛАТФОРМА (контекст выполнения)
+================================================================================
+
+- Язык: Python 3.10+
+- Файл лежит в каталоге scripts рядом с модулем _common.py
+- Имя файла: <КОД>.py; код проверки = имя без расширения .py
+- Раннер вызывает: execute(app_code) или execute(app_code, data)
+  * app_code — мнемоника/alias продукта (строка)
+  * data — dict с документом, если при запуске передан docId; иначе {}
+- Результат execute — словарь (TypedDict) ExecuteResult с полями:
+  * app_code: str
+  * script_code: str  — совпадает с кодом из имени файла
+  * is_check: bool     — True = проверка пройдена по бизнес-правилам
+  * details: list[dict] — детализация проверки
+
+Импорт в начале скрипта (обязательный шаблон):
+
+  import os
+  import sys
+  from typing import Any
+
+  SCRIPT_CODE = os.path.splitext(os.path.basename(__file__))[0]
+  sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from _common import ExecuteResult
+  # при HTTP через API-gateway:
+  # from _common import ExecuteResult, structurizr_http_client
+
+
+================================================================================
+ПРАВИЛА НАПИСАНИЯ
+================================================================================
+
+1. Структура файла
+   - Первая строка: #!/usr/bin/env python3
+   - Docstring: что проверяет, какие API, правило is_check
+   - Константы условий — UPPER_SNAKE_CASE
+   - Вспомогательная логика — функции с префиксом _
+   - Публичная точка входа — только execute(...)
+
+2. execute()
+   - Обязательна, возвращает ExecuteResult
+   - Предпочтительная сигнатура:
+       def execute(app_code: str, data: dict[str, Any]) -> ExecuteResult:
+   - Допустимо:
+       def execute(app_code: str) -> ExecuteResult:
+   - В конце:
+       return ExecuteResult(
+           app_code=app_code,
+           script_code=SCRIPT_CODE,
+           is_check=...,
+           details=...,
+       )
+
+3. details
+   - Список словарей
+   - Каждый элемент ОБЯЗАТЕЛЬНО содержит ключ "check" типа bool (не строка "true")
+   - Остальные ключи — только из блока «Описание задачи»
+   - count_detail и success_detail раннер считает сам — не задавать в execute
+
+4. is_check
+   - Итог всей проверки по бизнес-правилам из задачи
+   - Не обязан совпадать с «все check=true в details», если в задаче задано иное
+     (например один агрегированный detail с check = is_check)
+
+5. HTTP-вызовы к внешним сервисам
+   - Использовать только клиент из окружения (в _common):
+       client = structurizr_http_client()
+       status, raw_bytes = client.get(path)
+   - path — относительный, с префиксом сервиса за gateway, например:
+       /product/api/v1/product/{код}/info
+   - {код} в path — urllib.parse.quote(app_code, safe="")
+   - Обработать: исключение сети; status вне 200–299; невалидный JSON; неверный тип тела
+   - Ошибки писать в stderr: print(..., file=sys.stderr)
+   - Не хардкодить хосты develop/prod; не собирать HMAC вручную
+
+6. Запреты
+   - Не подключаться к PostgreSQL и не использовать psycopg2
+   - Не вызывать run_check / POST сохранения результата из execute
+   - Не добавлять лишние pip-зависимости
+   - Не писать код «на будущее» вне задачи
+
+7. data (docId)
+   - Если проверка читает документ Structurizr — брать поля из аргумента data
+   - Если проверка только по HTTP продукта — data можно не использовать
+
+
+================================================================================
+ШАБЛОН HTTP-ЗАПРОСА (если в задаче есть внешний API)
+================================================================================
+
+  import json
+  import urllib.parse
+
+  def _fetch_...(app_code: str) -> dict | None:
+      if not app_code:
+          return None
+      safe = urllib.parse.quote(app_code, safe="")
+      path = f"/product/api/v1/product/{safe}/..."   # path из задачи
+      try:
+          client = structurizr_http_client()
+          status, raw_bytes = client.get(path)
+      except Exception as exc:
+          print(f"Ошибка HTTP: {exc}", file=sys.stderr)
+          return None
+      if not (200 <= status < 300):
+          print(f"HTTP {status}", file=sys.stderr)
+          return None
+      try:
+          data = json.loads(raw_bytes.decode("utf-8", errors="replace"))
+      except ValueError:
+          print("Некорректный JSON", file=sys.stderr)
+          return None
+      if not isinstance(data, dict):   # или list — по задаче
+          print("Неожиданный формат ответа", file=sys.stderr)
+          return None
+      return data
+
+
+================================================================================
+МИНИМАЛЬНЫЙ КАРКАС СКРИПТА
+================================================================================
+
+  #!/usr/bin/env python3
+  """<описание>."""
+  import os
+  import sys
+  from typing import Any
+
+  SCRIPT_CODE = os.path.splitext(os.path.basename(__file__))[0]
+
+  sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from _common import ExecuteResult
+
+
+  def execute(app_code: str, data: dict[str, Any]) -> ExecuteResult:
+      # бизнес-логика по блоку «Описание задачи»
+      details = [{"check": False}]  # заменить по задаче
+      is_check = False              # заменить по задаче
+      return ExecuteResult(
+          app_code=app_code,
+          script_code=SCRIPT_CODE,
+          is_check=is_check,
+          details=details,
+      )
+
+
+================================================================================
+ЧТО ВЫДАТЬ В ОТВЕТЕ
+================================================================================
+
+1. Полный код файла <КОД>.py
+2. Если код проверки не задан в задаче — предложить осмысленный <КОД>
+3. Одним абзацем: какой is_check и какой details при успехе и при типичной ошибке
+
+Не включать в ответ пояснения про регистрацию в БД, пути в репозитории и ссылки
+на внешние материалы — только код и краткое резюме логики.
+
+
+================================================================================
+САМОПРОВЕРКА
+================================================================================
+
+- is_check и details соответствуют только блоку «Описание задачи»
+- У каждого элемента details есть bool "check"
+- Есть execute() → ExecuteResult; нет ручной записи результата
+- SCRIPT_CODE = имя файла без .py
+- HTTP через structurizr_http_client, без хардкода хоста
