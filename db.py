@@ -633,6 +633,55 @@ def get_actual_results_by_product_code(
     return out
 
 
+def get_product_ff_history(product_code: str, ff_code: str) -> Optional[list[dict]]:
+    """
+    История всех записей product_ff для пары (код продукта, код проверки), от новых к старым.
+    None — если проверка с ff_code не найдена в fitness_function.
+    Поля: id, product_code, ff_id, ff_code, ff_description, is_check, is_actual, create_date,
+    json_details, count_detail, success_detail, source_type, source_id, ff_status (текущий статус проверки).
+    """
+    pc = product_code.strip()
+    fc = ff_code.strip()
+    with get_cursor() as cur:
+        cur.execute(
+            f"SELECT id FROM {SCHEMA}.fitness_function WHERE code = %s",
+            (fc,),
+        )
+        if cur.fetchone() is None:
+            return None
+        cur.execute(
+            f"""
+            SELECT
+                pf.id,
+                pf.product_code,
+                pf.ff_id,
+                pf.is_check,
+                pf.is_actual,
+                pf.create_date,
+                pf.json_details,
+                pf.count_detail,
+                pf.success_detail,
+                pf.source_type,
+                pf.source_id,
+                ff.code AS ff_code,
+                ff.description AS ff_description,
+                ff.status AS ff_status
+            FROM {SCHEMA}.product_ff pf
+            JOIN {SCHEMA}.fitness_function ff ON ff.id = pf.ff_id
+            WHERE LOWER(pf.product_code) = LOWER(%s) AND ff.code = %s
+            ORDER BY pf.create_date DESC, pf.id DESC
+            """,
+            (pc, fc),
+        )
+        rows = cur.fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["ff_status"] = _row_ff_status({"status": d.get("ff_status")})
+        out.append(d)
+    return out
+
+
 def init_schema():
     """Создание схемы ff, таблиц и тестовых данных при первом старте."""
     conn = get_connection()

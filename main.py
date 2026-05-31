@@ -23,6 +23,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from db import (
     init_schema,
     get_actual_results_by_product_code,
+    get_product_ff_history,
     get_all_fitness_functions,
     get_fitness_function_applicabilities,
     get_fitness_function_code_to_id,
@@ -38,7 +39,7 @@ from db import (
     save_product_ff_result,
 )
 from ff_runner import run_ff_check
-from ff_status import FF_STATUS_TEST, normalize_ff_status, skips_applicability_check
+from ff_status import FF_STATUS_ADOPT, FF_STATUS_TEST, normalize_ff_status, skips_applicability_check
 from run_result import check_result_from_outside_ff_row
 from config import settings
 from structurizr_hmac import CredentialsFetchError, fetch_structurizr_credentials
@@ -232,6 +233,20 @@ class ProductActualResultsBody(BaseModel):
     results: list[ActualResultRow]
 
 
+class ProductFfHistoryRow(ActualResultRow):
+    """Одна запись истории прохождения проверки по продукту."""
+
+    is_actual: bool = Field(..., description="True — актуальный результат на момент запроса")
+
+
+class ProductFfHistoryBody(BaseModel):
+    """История прохождений одной проверки по продукту (от новых к старым)."""
+
+    product_code: str
+    ff_code: str
+    history: list[ProductFfHistoryRow]
+
+
 @app.on_event("startup")
 def startup():
     ensure_scripts_dir(reset=True)
@@ -370,6 +385,36 @@ class FfWebhookBody(BaseModel):
 
 def _json_details_for_db(value: Any) -> Optional[str]:
     return json_details_value_to_db_str(value)
+
+
+def _parse_json_details(raw_details: Any) -> Optional[Any]:
+    if raw_details is None:
+        return None
+    try:
+        return json.loads(raw_details)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def _product_ff_row_to_api(r: dict, *, include_is_actual: bool = False) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "id": r["id"],
+        "product_code": r["product_code"],
+        "ff_id": r["ff_id"],
+        "ff_code": r["ff_code"],
+        "ff_description": r["ff_description"],
+        "status": r.get("ff_status") or FF_STATUS_ADOPT,
+        "is_check": r["is_check"],
+        "create_date": r["create_date"],
+        "details": _parse_json_details(r.get("json_details")),
+        "countDetail": r.get("count_detail"),
+        "successDetail": r.get("success_detail"),
+        "source_type": r.get("source_type"),
+        "source_id": r.get("source_id"),
+    }
+    if include_is_actual:
+        item["is_actual"] = bool(r.get("is_actual"))
+    return item
 
 
 def _normalize_script_text_input(raw_script: str) -> str:
@@ -1069,35 +1114,39 @@ def get_product_actual_results(
         auxiliary_only=auxiliary is True,
     )
 
-    results = []
-    for r in raw_results:
-        raw_details = r.get("json_details")
-        if raw_details is None:
-            details = None
-        else:
-            try:
-                details = json.loads(raw_details)
-            except (TypeError, json.JSONDecodeError):
-                details = None
-        results.append(
-            {
-                "id": r["id"],
-                "product_code": r["product_code"],
-                "ff_id": r["ff_id"],
-                "ff_code": r["ff_code"],
-                "ff_description": r["ff_description"],
-                "status": r.get("ff_status") or FF_STATUS_ADOPT,
-                "is_check": r["is_check"],
-                "create_date": r["create_date"],
-                "details": details,
-                "countDetail": r.get("count_detail"),
-                "successDetail": r.get("success_detail"),
-                "source_type": r.get("source_type"),
-                "source_id": r.get("source_id"),
-            }
-        )
+    results = [_product_ff_row_to_api(r) for r in raw_results]
 
     return ProductActualResultsBody(product_code=code, results=results)
+
+
+@app.get(
+    "/api/v1/product/{code}/ff/{ff_code}/history",
+    response_model=ProductFfHistoryBody,
+    responses=_openapi_client_errors(404, 405),
+)
+def get_product_ff_history_api(code: str, ff_code: str):
+    """
+    История прохождений одной проверки по продукту: все записи product_ff для пары
+    (код продукта, код проверки), от самой свежей даты к самой старой.
+
+    В каждой записи — полные данные прохождения (is_check, details, счётчики, source_type, source_id),
+    а также **is_actual** (актуальная запись на момент запроса).
+    Код продукта в path сравнивается без учёта регистра.
+    Если проверка с ff_code не найдена — 404; если истории нет — history: [].
+    """
+    raw_history = get_product_ff_history(code, ff_code)
+    if raw_history is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Проверка с кодом '{ff_code.strip()}' не найдена в fitness_function",
+        )
+
+    history = [_product_ff_row_to_api(r, include_is_actual=True) for r in raw_history]
+    return ProductFfHistoryBody(
+        product_code=code.strip(),
+        ff_code=ff_code.strip(),
+        history=history,
+    )
 
 
 @app.get("/health")
