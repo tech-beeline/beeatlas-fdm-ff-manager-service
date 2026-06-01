@@ -1,12 +1,12 @@
+# Copyright (c) 2024 PJSC VimpelCom
 #!/usr/bin/env python3
 """
 Скрипт проверки DEMOFF-3.
 Вызывается тот же метод FDM, что и в DEMOFF-1/DEMOFF-2.
 Проверка пройдена, если у каждого элемента в массивах operations есть sla
 с атрибутами rps, errorRate, latency: ни один не null, rps и latency не равны 0.
-Дополнительно заполняются success_detail/count_detail/json_details.
+Результат возвращается из execute(); сохранение и подсчёт detail выполняет раннер.
 """
-import json
 import os
 import sys
 from urllib.request import urlopen, Request
@@ -14,10 +14,10 @@ from urllib.error import URLError, HTTPError
 
 SCRIPT_CODE = os.path.splitext(os.path.basename(__file__))[0]
 
-FDM_BASE_URL = "https://fdm-products-dev-eafdmmart.apps.yd-m6-kt22.vimpelcom.ru"
+FDM_BASE_URL = "https://eafdmmart-develop-fdm-products.apps.yd-m6-kt22.vimpelcom.ru"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import run_check
+from _common import ExecuteResult, detail_row_passes
 
 
 def _fetch_containers(cmdb_code: str):
@@ -59,16 +59,12 @@ def _sla_valid(sla) -> bool:
 
 def compute_operation_stats(cmdb_code: str):
     """
-    Возвращает (is_check, success_detail, count_detail, json_details) по операциям.
-    count_detail — количество операций (элементов массива operations),
-    success_detail — сколько из них имеют валидный sla.
+    Возвращает (is_check, details) по операциям (каждая операция — элемент details).
     """
     containers = _fetch_containers(cmdb_code)
     if containers is None:
-        return False, 0, 0, None
+        return False, []
 
-    count_detail = 0
-    success_detail = 0
     details = []
 
     for container in containers:
@@ -86,36 +82,29 @@ def compute_operation_stats(cmdb_code: str):
             for op in operations:
                 if not isinstance(op, dict):
                     continue
-                count_detail += 1
                 sla = op.get("sla")
                 ok = _sla_valid(sla)
-                if ok:
-                    success_detail += 1
                 op_name = op.get("name") or ""
                 op_type = op.get("type") or ""
                 details.append(
                     {
-                        "check": "true" if ok else "false",
+                        "check": ok,
                         "operationName": f"{op_name} {op_type}".strip(),
                     }
                 )
 
-    if count_detail == 0:
-        return False, 0, 0, None
+    if len(details) == 0:
+        return False, []
 
-    is_check = success_detail == count_detail
-    json_details = json.dumps(details, ensure_ascii=False)
-    return is_check, success_detail, count_detail, json_details
+    is_check = all(detail_row_passes(d) for d in details)
+    return is_check, details
 
 
-if __name__ == "__main__":
-    app_code = sys.argv[1] if len(sys.argv) > 1 else ""
-    is_check, success_detail, count_detail, json_details = compute_operation_stats(app_code)
-    run_check(
-        app_code,
-        SCRIPT_CODE,
+def execute(app_code: str) -> ExecuteResult:
+    is_check, details = compute_operation_stats(app_code)
+    return ExecuteResult(
+        app_code=app_code,
+        script_code=SCRIPT_CODE,
         is_check=is_check,
-        success_detail=success_detail,
-        count_detail=count_detail,
-        json_details=json_details,
+        details=details,
     )

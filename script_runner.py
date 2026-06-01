@@ -1,14 +1,33 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """Обнаружение и запуск скриптов проверок. Поддержка добавления/удаления скриптов без перезапуска."""
 import errno
+import importlib.util
+import inspect
+import io
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
+
+from run_result import (
+    build_check_result,
+    build_check_result_from_details_list,
+    check_result_from_stored_row,
+)
+
+CheckResultPayload = Optional[dict[str, Any]]
 
 from config import settings
-from db import get_latest_check_result
+from db import (
+    add_fitness_function,
+    get_all_fitness_functions,
+    get_fitness_function_by_code,
+    get_latest_check_result_payload,
+)
+from ff_status import FF_STATUS_ADOPT
 
 # Если целевой каталог (например смонтированный volume) только для чтения — сканируем /scripts-src из образа.
 _scripts_dir_override: Optional[Path] = None
@@ -31,6 +50,15 @@ def _copy_bundled_into_dest(src: Path, dest: Path) -> None:
             shutil.copy2(item, target)
 
 
+def _clear_dir_contents(dest: Path) -> None:
+    """Удаляет все файлы и подкаталоги внутри dest, не удаляя сам каталог."""
+    for item in dest.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+
+
 def _configured_scripts_dir() -> Path:
     """Каталог скриптов из настроек, относительно корня приложения."""
     root = Path(__file__).resolve().parent
@@ -50,9 +78,10 @@ def get_scripts_dir() -> Path:
     return _configured_scripts_dir()
 
 
-def ensure_scripts_dir() -> None:
+def ensure_scripts_dir(reset: bool = False) -> None:
     """
-    Создаёт каталог скриптов при отсутствии и копирует в него файлы из /scripts-src
+    Создаёт каталог скриптов при отсутствии и копирует в него файлы из /scripts-src.
+    При reset=True предварительно очищает целевой каталог.
     (в образе Docker скрипты дублируются туда из исходного каталога — см. Dockerfile).
     Если запись в целевой каталог невозможна (только чтение) — используется /scripts-src без копирования.
     Если /scripts-src нет (локальный запуск), только гарантирует наличие каталога.
@@ -98,6 +127,15 @@ def ensure_scripts_dir() -> None:
             return
         raise
 
+    if reset:
+        try:
+            _clear_dir_contents(dest)
+        except OSError as e:
+            if should_use_bundled_exc(e):
+                use_bundled()
+                return
+            raise
+
     try:
         _copy_bundled_into_dest(BUNDLED_SCRIPTS_SRC, dest)
     except OSError as e:
@@ -116,6 +154,56 @@ def ensure_scripts_dir() -> None:
                     use_bundled()
                     return
         raise
+
+
+def materialize_missing_scripts_from_db() -> None:
+    """
+    Для строк fitness_function с непустым script в БД создаёт файл {code}.py в каталоге скриптов,
+    если такого файла ещё нет. Не перезаписывает существующие файлы.
+    """
+    scripts_dir = get_scripts_dir()
+    try:
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    rows = get_all_fitness_functions()
+    for row in rows:
+        code = (row.get("code") or "").strip()
+        script = row.get("script")
+        if not code:
+            continue
+        if script is None or not str(script).strip():
+            continue
+        path = scripts_dir / f"{code}.py"
+        if path.exists():
+            continue
+        try:
+            path.write_text(str(script), encoding="utf-8")
+        except OSError:
+            continue
+
+
+def materialize_missing_fitness_functions_from_scripts() -> None:
+    """
+    Для .py-скриптов из каталога scripts создаёт строки в fitness_function, если их ещё нет.
+    Нужно для кейса, когда скрипт есть в образе/каталоге, но проверка не заведена в БД.
+    """
+    existing = {
+        (row.get("code") or "").strip()
+        for row in get_all_fitness_functions()
+        if (row.get("code") or "").strip()
+    }
+    for code in list_scripts():
+        if code in existing:
+            continue
+        add_fitness_function(
+            code=code,
+            description=f"Автодобавленная проверка из scripts/{code}.py",
+            applicability=None,
+            auxiliary_check=False,
+            status=FF_STATUS_ADOPT,
+            create_only=True,
+        )
 
 
 def list_scripts() -> list[str]:
@@ -144,14 +232,61 @@ def _script_path(code: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
-def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]:
+def _sync_script_from_db(code: str) -> Optional[Path]:
+    """
+    Синхронизирует файл скрипта на диске из fitness_function.script (если поле непустое).
+    Возвращает путь к файлу при успехе.
+    """
+    row = get_fitness_function_by_code(code.strip())
+    if not row:
+        return None
+    script_text = row.get("script")
+    if script_text is None or not str(script_text).strip():
+        return None
+
+    scripts_dir = get_scripts_dir()
+    try:
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    path = scripts_dir / f"{code}.py"
+    desired = str(script_text)
+    if path.is_file():
+        try:
+            current = path.read_text(encoding="utf-8")
+            if current == desired:
+                return path
+        except OSError:
+            pass
+    try:
+        path.write_text(desired, encoding="utf-8")
+    except OSError:
+        return None
+    return path if path.is_file() else None
+
+
+def run_script(
+    code: str,
+    app_mnemonic: str,
+    structurizr_credentials: Optional[Tuple[str, str]] = None,
+    data: Optional[dict[str, Any]] = None,
+    *,
+    is_test_mode: bool = False,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+) -> Tuple[bool, str, CheckResultPayload]:
     """
     Запуск одного скрипта проверки для приложения.
     :param code: Код проверки (имя скрипта без .py), например SEQ01 или DEMOFF-1.
     :param app_mnemonic: Мнемоника приложения (строка).
-    :return: (успех, вывод скрипта или сообщение об ошибке, результат проверки is_check или None).
+    :param is_test_mode: статус TEST — результат не пишется в product_ff, детали в check_result.
+    :return: (успех, вывод скрипта или сообщение об ошибке, check_result или None).
     """
-    path = _script_path(code)
+    # Приоритет источника правды — script в БД (если заполнен).
+    path = _sync_script_from_db(code)
+    if not path:
+        path = _script_path(code)
     if not path:
         return False, f"Скрипт с кодом '{code}' не найден.", None
 
@@ -162,8 +297,32 @@ def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]
     env["FF_DB_PASSWORD"] = settings.db_password
     env["FF_DB_NAME"] = settings.db_name
     env["FF_API_BASE_URL"] = settings.api_base_url
+    if source_type:
+        env["FF_SOURCE_TYPE"] = source_type
+    if source_id:
+        env["FF_SOURCE_ID"] = source_id
+    if structurizr_credentials:
+        env["FF_STRUCTURIZR_API_KEY"] = structurizr_credentials[0]
+        env["FF_STRUCTURIZR_API_SECRET"] = structurizr_credentials[1]
+        env["FF_STRUCTURIZR_HTTP_BASE_URL"] = (settings.structurizr_http_base_url or "").strip()
+        env["FF_STRUCTURIZR_HTTP_TIMEOUT"] = str(settings.structurizr_http_timeout_seconds)
 
     try:
+        ok, out, done, check_from_execute = _run_script_module(
+            path,
+            code,
+            app_mnemonic,
+            env,
+            data,
+            is_test_mode=is_test_mode,
+            source_type=source_type,
+            source_id=source_id,
+        )
+        if done:
+            if not ok:
+                return False, out, None
+            return True, out or "OK", check_from_execute
+
         result = subprocess.run(
             [sys.executable, str(path), app_mnemonic],
             capture_output=True,
@@ -175,11 +334,105 @@ def run_script(code: str, app_mnemonic: str) -> Tuple[bool, str, Optional[bool]]
         out = (result.stdout or "").strip() or (result.stderr or "").strip()
         if result.returncode != 0:
             return False, out or f"Код возврата: {result.returncode}", None
-        check_result = get_latest_check_result(app_mnemonic, code)
-        return True, out or "OK", check_result
+        if is_test_mode:
+            return (
+                False,
+                out
+                or (
+                    "Тестовая проверка: скрипт должен реализовать execute() и возвращать результат, "
+                    "без записи в product_ff."
+                ),
+                None,
+            )
+        stored = get_latest_check_result_payload(app_mnemonic, code)
+        if stored is None:
+            return (
+                False,
+                out
+                or (
+                    "Скрипт завершился без ошибки, но результат проверки не был записан. "
+                    "Добавьте execute(app_code, data) -> ExecuteResult или явный вызов run_check(...)."
+                ),
+                None,
+            )
+        return True, out or "OK", check_result_from_stored_row(
+            bool(stored["is_check"]),
+            json_details=stored.get("json_details"),
+            count_detail=stored.get("count_detail"),
+            success_detail=stored.get("success_detail"),
+        )
     except subprocess.TimeoutExpired:
         return False, "Таймаут выполнения скрипта.", None
     except Exception as e:
         return False, str(e), None
 
+
+def _run_script_module(
+    path: Path,
+    code: str,
+    app_mnemonic: str,
+    env: dict,
+    data: Optional[dict[str, Any]] = None,
+    *,
+    is_test_mode: bool = False,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+) -> Tuple[bool, str, bool, CheckResultPayload]:
+    """
+    Пытается выполнить скрипт как модуль через функцию execute(app_code).
+    Возвращает:
+      - ok: успешность выполнения execute
+      - output: stdout/stderr функции
+      - done: True, если запуск через execute был выполнен;
+              False, если execute отсутствует и нужен fallback на subprocess.
+      - check_result: объект с is_check/details или None если execute не вызывался.
+    """
+    spec = importlib.util.spec_from_file_location(f"ff_script_{code}", str(path))
+    if spec is None or spec.loader is None:
+        return False, "Не удалось подготовить импорт скрипта.", True, None
+
+    module = importlib.util.module_from_spec(spec)
+    old_env = dict(os.environ)
+    capture = io.StringIO()
+    try:
+        os.environ.update(env)
+        spec.loader.exec_module(module)
+        # Доступ к документу как к глобальной переменной в скрипте.
+        setattr(module, "data", data if data is not None else {})
+        execute = getattr(module, "execute", None)
+        if not callable(execute):
+            return True, "", False, None
+        # Импорт после startup: ensure_scripts_dir() копирует /scripts-src → каталог скриптов (часто /app/scripts).
+        from scripts._common import coerce_execute_result, persist_execute_result
+
+        with redirect_stdout(capture), redirect_stderr(capture):
+            sig = inspect.signature(execute)
+            if "data" in sig.parameters:
+                raw = execute(app_mnemonic, data=data if data is not None else {})
+            elif len(sig.parameters) >= 2:
+                raw = execute(app_mnemonic, data if data is not None else {})
+            else:
+                raw = execute(app_mnemonic)
+        result = coerce_execute_result(raw, app_mnemonic, code)
+        check_payload = build_check_result_from_details_list(
+            result["is_check"],
+            result["details"],
+        )
+        if not is_test_mode:
+            persist_execute_result(
+                product_code=app_mnemonic.strip(),
+                ff_code=code.strip(),
+                is_check=result["is_check"],
+                details=result["details"],
+                source_type=source_type,
+                source_id=source_id,
+            )
+        return True, capture.getvalue().strip(), True, check_payload
+    except Exception as e:
+        output = capture.getvalue().strip()
+        msg = f"{output}\n{e}".strip() if output else str(e)
+        return False, msg, True, None
+    finally:
+        os.environ.clear()
+        os.environ.update(old_env)
 

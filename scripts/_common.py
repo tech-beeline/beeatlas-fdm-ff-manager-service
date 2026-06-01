@@ -1,9 +1,13 @@
+# Copyright (c) 2024 PJSC VimpelCom
 """
 Общая логика для скриптов проверок:
-- отправка результата в API FF Manager (POST /api/v1/product/{alias}/ff), без прямого доступа к БД.
+- отправка результата в API FF Manager (POST /api/v1/product/{alias}/ff), без прямого доступа к БД;
+- тип результата execute() и сохранение через persist_execute_result (вызывается раннером).
 
 Переменные окружения:
 - FF_API_BASE_URL — базовый URL сервиса (по умолчанию http://127.0.0.1:8000).
+- Structurizr HMAC: FF_STRUCTURIZR_HTTP_BASE_URL, FF_STRUCTURIZR_API_KEY, FF_STRUCTURIZR_API_SECRET
+  (задаётся раннером при POST /api/v1/run и /api/v1/run-all; в скриптах вызывайте structurizr_http_client()).
 """
 import json
 import os
@@ -11,7 +15,122 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional, TypedDict, cast
+
+if TYPE_CHECKING:
+    from structurizr_hmac import StructurizrHmacClient
+
+
+class ExecuteResult(TypedDict):
+    """Единый возврат функции execute() из скрипта проверки."""
+
+    app_code: str
+    script_code: str
+    is_check: bool
+    details: list[dict[str, Any]]
+
+
+def detail_row_passes(row: Mapping[str, Any]) -> bool:
+    """Элемент details считается успешным, если check истинен (bool True или строка \"true\" и т.п.)."""
+    v = row.get("check")
+    if v is True:
+        return True
+    if isinstance(v, str) and v.strip().lower() in ("true", "1", "yes"):
+        return True
+    return False
+
+
+def coerce_execute_result(raw: object, app_mnemonic: str, script_file_code: str) -> ExecuteResult:
+    """
+    Проверяет и нормализует возврат execute(): dict или кортеж
+    (app_code, script_code, is_check, details).
+    """
+    if isinstance(raw, tuple) and len(raw) == 4:
+        app_code, script_code, is_check, details = raw
+    elif isinstance(raw, dict):
+        app_code = raw.get("app_code")
+        script_code = raw.get("script_code")
+        is_check = raw.get("is_check")
+        details = raw.get("details")
+    else:
+        raise TypeError(
+            "execute() должен вернуть dict с ключами app_code, script_code, is_check, details "
+            f"или кортеж из 4 элементов; получено: {type(raw).__name__}"
+        )
+
+    if not isinstance(app_code, str) or not isinstance(script_code, str):
+        raise TypeError("app_code и script_code должны быть строками")
+    if not isinstance(is_check, bool):
+        raise TypeError("is_check должен быть bool")
+    if not isinstance(details, list):
+        raise TypeError("details должен быть списком")
+    for i, item in enumerate(details):
+        if not isinstance(item, dict):
+            raise TypeError(f"details[{i}] должен быть dict")
+
+    if app_code.strip() != app_mnemonic.strip():
+        print(
+            f"Предупреждение: app_code из execute ({app_code!r}) не совпадает с аргументом ({app_mnemonic!r}); "
+            "для API используется переданный код продукта.",
+            file=sys.stderr,
+        )
+    if script_code.strip() != script_file_code.strip():
+        print(
+            f"Предупреждение: script_code из execute ({script_code!r}) не совпадает с кодом скрипта ({script_file_code!r}); "
+            "для записи FF используется код файла.",
+            file=sys.stderr,
+        )
+
+    return ExecuteResult(
+        app_code=app_mnemonic.strip(),
+        script_code=script_file_code.strip(),
+        is_check=is_check,
+        details=cast(list[dict[str, Any]], details),
+    )
+
+
+def persist_execute_result(
+    *,
+    product_code: str,
+    ff_code: str,
+    is_check: bool,
+    details: list[dict[str, Any]],
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+) -> None:
+    """
+    Сохраняет результат проверки: count_detail = len(details), success_detail — число элементов с check=true.
+    """
+    count_detail = len(details)
+    success_detail = sum(1 for row in details if detail_row_passes(row))
+    json_details: Optional[str]
+    if details:
+        json_details = json.dumps(details, ensure_ascii=False)
+    else:
+        json_details = None
+    run_check(
+        product_code,
+        ff_code,
+        is_check=is_check,
+        success_detail=success_detail,
+        count_detail=count_detail,
+        json_details=json_details,
+        source_type=source_type,
+        source_id=source_id,
+    )
+
+
+def structurizr_http_client() -> "StructurizrHmacClient":
+    """
+    Клиент HTTP с HMAC (Structurizr) для запросов с заранее настроенного хоста.
+    Ключи не передаются в скрипт вручную — только при запуске из POST /run или /run-all.
+    """
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from structurizr_hmac import StructurizrHmacClient
+
+    return StructurizrHmacClient.from_env()
 
 
 def run_check(
@@ -21,6 +140,8 @@ def run_check(
     success_detail: Optional[int] = None,
     count_detail: Optional[int] = None,
     json_details: Optional[str] = None,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
 ) -> None:
     """
     Отправляет результат проверки на API: создаётся актуальная запись product_ff.
@@ -36,6 +157,17 @@ def run_check(
     path = urllib.parse.quote(alias, safe="")
     url = f"{base}/api/v1/product/{path}/ff"
 
+    if source_type is None:
+        source_type = os.environ.get("FF_SOURCE_TYPE") or None
+    if source_id is None:
+        source_id = os.environ.get("FF_SOURCE_ID") or None
+    if source_type:
+        source_type = source_type.strip() or None
+    if source_id:
+        source_id = source_id.strip() or None
+    if not source_type:
+        source_id = None
+
     payload = {
         "ff_code": script_code,
         "is_check": is_check,
@@ -43,6 +175,10 @@ def run_check(
         "count_detail": count_detail,
         "success_detail": success_detail,
     }
+    if source_type:
+        payload["source_type"] = source_type
+        if source_id:
+            payload["source_id"] = source_id
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -66,3 +202,20 @@ def run_check(
     except OSError as e:
         print(f"Ошибка сети при обращении к API: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def run_check_from_details(
+    app_code: str,
+    script_code: str,
+    details: list[dict[str, Any]],
+) -> None:
+    """
+    Устаревший helper: итог проверки = список непустой (как раньше).
+    Предпочтительно возвращать данные из execute() и позволить раннеру вызвать persist_execute_result.
+    """
+    persist_execute_result(
+        product_code=app_code,
+        ff_code=script_code,
+        is_check=len(details) > 0,
+        details=details,
+    )
